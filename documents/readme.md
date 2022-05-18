@@ -9,4 +9,4 @@ Use a local player:
 - MacOS: [IINA](https://iina.io/)
 - Mobile: [VLC](https://www.videolan.org/)-[Android](https://www.videolan.org/vlc/download-android.html)-[iOS](https://www.videolan.org/vlc/download-ios.html) 
  
-After installation, Click on the corresponding button in the video playback page
+After installation, Click on the corresponding button on the video playback page
