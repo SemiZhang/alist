@@ -1,295 +1,108 @@
-package _189
+package _189pc
 
 import (
-	"bytes"
-	"crypto/md5"
-	"encoding/base64"
-	"encoding/hex"
-	"fmt"
-	"io"
-	"io/ioutil"
-	"math"
+	"context"
 	"net/http"
-	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
+	"time"
 
-	"github.com/Xhofe/alist/conf"
-	"github.com/Xhofe/alist/drivers/base"
-	"github.com/Xhofe/alist/model"
-	"github.com/Xhofe/alist/utils"
+	"github.com/alist-org/alist/v3/drivers/base"
+	"github.com/alist-org/alist/v3/internal/driver"
+	"github.com/alist-org/alist/v3/internal/model"
+	"github.com/alist-org/alist/v3/pkg/utils"
 	"github.com/go-resty/resty/v2"
-	log "github.com/sirupsen/logrus"
 )
 
-func init() {
-	base.RegisterDriver(new(Cloud189))
+type Yun189PC struct {
+	model.Storage
+	Addition
+
+	identity string
+
+	client    *resty.Client
+	putClient *resty.Client
+
+	loginParam *LoginParam
+	tokenInfo  *AppSessionResp
 }
 
-type Cloud189 struct {
+func (y *Yun189PC) Config() driver.Config {
+	return config
 }
 
-func (driver Cloud189) Config() base.DriverConfig {
-	return base.DriverConfig{
-		Name: "189CloudPC",
-	}
+func (y *Yun189PC) GetAddition() driver.Additional {
+	return y.Addition
 }
 
-func (driver Cloud189) Items() []base.Item {
-	return []base.Item{
-		{
-			Name:        "username",
-			Label:       "username",
-			Type:        base.TypeString,
-			Required:    true,
-			Description: "account username/phone number",
-		},
-		{
-			Name:        "password",
-			Label:       "password",
-			Type:        base.TypeString,
-			Required:    true,
-			Description: "account password",
-		},
-		{
-			Name:  "root_folder",
-			Label: "root folder file_id",
-			Type:  base.TypeString,
-		},
-		{
-			Name:     "internal_type",
-			Label:    "189cloud type",
-			Type:     base.TypeSelect,
-			Required: true,
-			Values:   "Personal,Family",
-		},
-		{
-			Name:  "site_id",
-			Label: "family id",
-			Type:  base.TypeString,
-		},
-		{
-			Name:     "order_by",
-			Label:    "order_by",
-			Type:     base.TypeSelect,
-			Values:   "filename,filesize,lastOpTime",
-			Required: true,
-		},
-		{
-			Name:     "order_direction",
-			Label:    "desc",
-			Type:     base.TypeSelect,
-			Values:   "true,false",
-			Required: true,
-		},
-		{
-			Name:  "bool_1",
-			Label: "fast upload",
-			Type:  base.TypeBool,
-		},
-	}
-}
-
-func (driver Cloud189) Save(account *model.Account, old *model.Account) error {
-	if account == nil {
-		return nil
+func (y *Yun189PC) Init(ctx context.Context, storage model.Storage) (err error) {
+	y.Storage = storage
+	if err = utils.Json.UnmarshalFromString(y.Storage.Addition, &y.Addition); err != nil {
+		return err
 	}
 
-	if !isFamily(account) && account.RootFolder == "" {
-		account.RootFolder = "-11"
-		account.SiteId = ""
+	// 处理个人云和家庭云参数
+	if y.isFamily() && y.RootFolderID == "-11" {
+		y.RootFolderID = ""
 	}
-	if isFamily(account) && account.RootFolder == "-11" {
-		account.RootFolder = ""
+	if !y.isFamily() && y.RootFolderID == "" {
+		y.RootFolderID = "-11"
+		y.FamilyID = ""
 	}
 
-	state := GetState(account)
-	if !state.IsLogin(account) {
-		if err := state.Login(account); err != nil {
+	// 初始化请求客户端
+	if y.client == nil {
+		y.client = base.NewRestyClient().SetHeaders(map[string]string{
+			"Accept":  "application/json;charset=UTF-8",
+			"Referer": WEB_URL,
+		})
+	}
+	if y.putClient == nil {
+		y.putClient = base.NewRestyClient().SetTimeout(120 * time.Second)
+	}
+
+	// 避免重复登陆
+	identity := utils.GetMD5Encode(y.Username + y.Password)
+	if !y.isLogin() || y.identity != identity {
+		y.identity = identity
+		if err = y.login(); err != nil {
+			return
+		}
+	}
+
+	// 处理家庭云ID
+	if y.isFamily() && y.FamilyID == "" {
+		if y.FamilyID, err = y.getFamilyID(); err != nil {
 			return err
 		}
 	}
+	return
+}
 
-	if isFamily(account) {
-		list, err := driver.getFamilyInfoList(account)
-		if err != nil {
-			return err
-		}
-		for _, l := range list {
-			if account.SiteId == "" {
-				account.SiteId = fmt.Sprint(l.FamilyID)
-			}
-			log.Infof("天翼家庭云 用户名：%s FamilyID %d\n", l.RemarkName, l.FamilyID)
-		}
-	}
-
-	account.Status = "work"
-	model.SaveAccount(account)
+func (y *Yun189PC) Drop(ctx context.Context) error {
 	return nil
 }
 
-func (driver Cloud189) getFamilyInfoList(account *model.Account) ([]FamilyInfoResp, error) {
-	var resp FamilyInfoListResp
-	_, err := GetState(account).Request(http.MethodGet, API_URL+"/family/manage/getFamilyList.action", nil, func(r *resty.Request) {
-		r.SetQueryParams(clientSuffix())
-		r.SetResult(&resp)
-	}, account)
-	if err != nil {
-		return nil, err
-	}
-	return resp.FamilyInfoResp, nil
+func (y *Yun189PC) List(ctx context.Context, dir model.Obj, args model.ListArgs) ([]model.Obj, error) {
+	return y.getFiles(ctx, dir.GetID())
 }
 
-func (driver Cloud189) File(path string, account *model.Account) (*model.File, error) {
-	path = utils.ParsePath(path)
-	if path == "/" {
-		return &model.File{
-			Id:        account.RootFolder,
-			Name:      account.Name,
-			Size:      0,
-			Type:      conf.FOLDER,
-			Driver:    driver.Config().Name,
-			UpdatedAt: account.UpdatedAt,
-		}, nil
-	}
-	dir, name := filepath.Split(path)
-	files, err := driver.Files(dir, account)
-	if err != nil {
-		return nil, err
-	}
-	for _, file := range files {
-		if file.Name == name {
-			return &file, nil
-		}
-	}
-	return nil, base.ErrPathNotFound
-}
-
-func (driver Cloud189) Files(path string, account *model.Account) ([]model.File, error) {
-	path = utils.ParsePath(path)
-	cache, err := base.GetCache(path, account)
-	if err == nil {
-		files, _ := cache.([]model.File)
-		return files, nil
-	}
-
-	file, err := driver.File(path, account)
-	if err != nil {
-		return nil, err
+func (y *Yun189PC) Link(ctx context.Context, file model.Obj, args model.LinkArgs) (*model.Link, error) {
+	var downloadUrl struct {
+		URL string `json:"fileDownloadUrl"`
 	}
 
 	fullUrl := API_URL
-	if isFamily(account) {
-		fullUrl += "/family/file"
-	}
-	fullUrl += "/listFiles.action"
-
-	files := make([]model.File, 0)
-	client := GetState(account)
-	for pageNum := 1; ; pageNum++ {
-		var resp Cloud189FilesResp
-		_, err = client.Request(http.MethodGet, fullUrl, nil, func(r *resty.Request) {
-			r.SetQueryParams(clientSuffix()).
-				SetQueryParams(map[string]string{
-					"folderId":   file.Id,
-					"fileType":   "0",
-					"mediaAttr":  "0",
-					"iconOption": "5",
-					"pageNum":    fmt.Sprint(pageNum),
-					"pageSize":   "130",
-				})
-			if isFamily(account) {
-				r.SetQueryParams(map[string]string{
-					"familyId":   account.SiteId,
-					"orderBy":    toFamilyOrderBy(account.OrderBy),
-					"descending": account.OrderDirection,
-				})
-			} else {
-				r.SetQueryParams(map[string]string{
-					"recursive":  "0",
-					"orderBy":    account.OrderBy,
-					"descending": account.OrderDirection,
-				})
-			}
-			r.SetResult(&resp)
-		}, account)
-		if err != nil {
-			return nil, err
-		}
-		// 获取完毕跳出
-		if resp.FileListAO.Count == 0 {
-			break
-		}
-
-		for _, folder := range resp.FileListAO.FolderList {
-			files = append(files, model.File{
-				Id:        fmt.Sprint(folder.ID),
-				Name:      folder.Name,
-				Size:      0,
-				Type:      conf.FOLDER,
-				Driver:    driver.Config().Name,
-				UpdatedAt: MustParseTime(folder.LastOpTime),
-			})
-		}
-		for _, file := range resp.FileListAO.FileList {
-			files = append(files, model.File{
-				Id:        fmt.Sprint(file.ID),
-				Name:      file.Name,
-				Size:      file.Size,
-				Type:      utils.GetFileType(filepath.Ext(file.Name)),
-				Driver:    driver.Config().Name,
-				UpdatedAt: MustParseTime(file.LastOpTime),
-				Thumbnail: file.Icon.SmallUrl,
-			})
-		}
-	}
-	if len(files) > 0 {
-		_ = base.SetCache(path, files, account)
-	}
-	return files, nil
-}
-
-func (driver Cloud189) Path(path string, account *model.Account) (*model.File, []model.File, error) {
-	path = utils.ParsePath(path)
-	log.Debugf("189PC path: %s", path)
-	file, err := driver.File(path, account)
-	if err != nil {
-		return nil, nil, err
-	}
-	if !file.IsDir() {
-		return file, nil, nil
-	}
-	files, err := driver.Files(path, account)
-	if err != nil {
-		return nil, nil, err
-	}
-	return nil, files, nil
-}
-
-func (driver Cloud189) Link(args base.Args, account *model.Account) (*base.Link, error) {
-	file, err := driver.File(utils.ParsePath(args.Path), account)
-	if err != nil {
-		return nil, err
-	}
-	if file.Type == conf.FOLDER {
-		return nil, base.ErrNotFile
-	}
-
-	fullUrl := API_URL
-	if isFamily(account) {
+	if y.isFamily() {
 		fullUrl += "/family/file"
 	}
 	fullUrl += "/getFileDownloadUrl.action"
 
-	var downloadUrl struct {
-		URL string `json:"fileDownloadUrl"`
-	}
-	_, err = GetState(account).Request(http.MethodGet, fullUrl, nil, func(r *resty.Request) {
-		r.SetQueryParams(clientSuffix()).SetQueryParam("fileId", file.Id)
-		if isFamily(account) {
+	_, err := y.get(fullUrl, func(r *resty.Request) {
+		r.SetContext(ctx)
+		r.SetQueryParam("fileId", file.GetID())
+		if y.isFamily() {
 			r.SetQueryParams(map[string]string{
-				"familyId": account.SiteId,
+				"familyId": y.FamilyID,
 			})
 		} else {
 			r.SetQueryParams(map[string]string{
@@ -297,622 +110,169 @@ func (driver Cloud189) Link(args base.Args, account *model.Account) (*base.Link,
 				"flag": "1",
 			})
 		}
-		r.SetResult(&downloadUrl)
-	}, account)
+	}, &downloadUrl)
 	if err != nil {
 		return nil, err
 	}
-	return &base.Link{
-		Headers: []base.Header{
-			{Name: "User-Agent", Value: base.UserAgent},
-		},
-		Url: strings.ReplaceAll(downloadUrl.URL, "&amp;", "&"),
-	}, nil
-}
 
-func (driver Cloud189) Preview(path string, account *model.Account) (interface{}, error) {
-	return nil, base.ErrNotSupport
-}
-
-func (driver Cloud189) MakeDir(path string, account *model.Account) error {
-	dir, name := filepath.Split(path)
-	parentFile, err := driver.File(dir, account)
+	// 重定向获取真实链接
+	downloadUrl.URL = strings.Replace(strings.ReplaceAll(downloadUrl.URL, "&amp;", "&"), "http://", "https://", 1)
+	res, err := base.NoRedirectClient.R().SetContext(ctx).Get(downloadUrl.URL)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if !parentFile.IsDir() {
-		return base.ErrNotFolder
+	if res.StatusCode() == 302 {
+		downloadUrl.URL = res.Header().Get("location")
 	}
 
+	like := &model.Link{
+		URL: downloadUrl.URL,
+		Header: http.Header{
+			"User-Agent": []string{base.UserAgent},
+		},
+	}
+	/*
+		// 获取链接有效时常
+		strs := regexp.MustCompile(`(?i)expire[^=]*=([0-9]*)`).FindStringSubmatch(downloadUrl.URL)
+		if len(strs) == 2 {
+			timestamp, err := strconv.ParseInt(strs[1], 10, 64)
+			if err == nil {
+				expired := time.Duration(timestamp-time.Now().Unix()) * time.Second
+				like.Expiration = &expired
+			}
+		}
+	*/
+	return like, nil
+}
+
+func (y *Yun189PC) MakeDir(ctx context.Context, parentDir model.Obj, dirName string) error {
 	fullUrl := API_URL
-	if isFamily(account) {
+	if y.isFamily() {
 		fullUrl += "/family/file"
 	}
 	fullUrl += "/createFolder.action"
 
-	_, err = GetState(account).Request(http.MethodPost, fullUrl, nil, func(r *resty.Request) {
-		r.SetQueryParams(clientSuffix()).SetQueryParams(map[string]string{
-			"folderName":   name,
+	_, err := y.post(fullUrl, func(req *resty.Request) {
+		req.SetContext(ctx)
+		req.SetQueryParams(map[string]string{
+			"folderName":   dirName,
 			"relativePath": "",
 		})
-		if isFamily(account) {
-			r.SetQueryParams(map[string]string{
-				"familyId": account.SiteId,
-				"parentId": parentFile.Id,
+		if y.isFamily() {
+			req.SetQueryParams(map[string]string{
+				"familyId": y.FamilyID,
+				"parentId": parentDir.GetID(),
 			})
 		} else {
-			r.SetQueryParams(map[string]string{
-				"parentFolderId": parentFile.Id,
+			req.SetQueryParams(map[string]string{
+				"parentFolderId": parentDir.GetID(),
 			})
 		}
-	}, account)
+	}, nil)
 	return err
 }
 
-func (driver Cloud189) Move(src string, dst string, account *model.Account) error {
-	srcFile, err := driver.File(src, account)
-	if err != nil {
-		return err
-	}
-
-	dstDirFile, err := driver.File(filepath.Dir(dst), account)
-	if err != nil {
-		return err
-	}
-
-	_, err = GetState(account).Request(http.MethodPost, API_URL+"/batch/createBatchTask.action", nil, func(r *resty.Request) {
-		r.SetFormData(clientSuffix()).SetFormData(map[string]string{
+func (y *Yun189PC) Move(ctx context.Context, srcObj, dstDir model.Obj) error {
+	_, err := y.post(API_URL+"/batch/createBatchTask.action", func(req *resty.Request) {
+		req.SetContext(ctx)
+		req.SetFormData(map[string]string{
 			"type": "MOVE",
-			"taskInfos": string(MustToBytes(utils.Json.Marshal(
-				[]*BatchTaskInfo{
+			"taskInfos": MustString(utils.Json.MarshalToString(
+				[]BatchTaskInfo{
 					{
-						FileId:   srcFile.Id,
-						FileName: srcFile.Name,
-						IsFolder: BoolToNumber(srcFile.IsDir()),
+						FileId:   srcObj.GetID(),
+						FileName: srcObj.GetName(),
+						IsFolder: BoolToNumber(srcObj.IsDir()),
 					},
-				}))),
-			"targetFolderId": dstDirFile.Id,
+				})),
+			"targetFolderId": dstDir.GetID(),
 		})
-		if isFamily(account) {
-			r.SetFormData(map[string]string{
-				"familyId": account.SiteId,
+		if y.isFamily() {
+			req.SetFormData(map[string]string{
+				"familyId": y.FamilyID,
 			})
 		}
-	}, account)
+	}, nil)
 	return err
 }
 
-/*
-func (driver Cloud189) Move(src string, dst string, account *model.Account) error {
-	srcFile, err := driver.File(src, account)
-	if err != nil {
-		return err
-	}
-
-	dstDirFile, err := driver.File(filepath.Dir(dst), account)
-	if err != nil {
-		return err
-	}
-
-	var queryParam map[string]string
+func (y *Yun189PC) Rename(ctx context.Context, srcObj model.Obj, newName string) error {
+	queryParam := make(map[string]string)
 	fullUrl := API_URL
 	method := http.MethodPost
-	if isFamily(account) {
+	if y.isFamily() {
 		fullUrl += "/family/file"
 		method = http.MethodGet
+		queryParam["familyId"] = y.FamilyID
 	}
-	if srcFile.IsDir() {
-		fullUrl += "/moveFolder.action"
-		queryParam = map[string]string{
-			"folderId":       srcFile.Id,
-			"destFolderName": srcFile.Name,
-		}
-	} else {
-		fullUrl += "/moveFile.action"
-		queryParam = map[string]string{
-			"fileId":       srcFile.Id,
-			"destFileName": srcFile.Name,
-		}
-	}
-
-	_, err = GetState(account).Request(method, fullUrl, nil, func(r *resty.Request) {
-		r.SetQueryParams(queryParam).SetQueryParams(clientSuffix())
-		if isFamily(account) {
-			r.SetQueryParams(map[string]string{
-				"familyId":     account.SiteId,
-				"destParentId": dstDirFile.Id,
-			})
-		} else {
-			r.SetQueryParam("destParentFolderId", dstDirFile.Id)
-		}
-	}, account)
-	return err
-}*/
-
-func (driver Cloud189) Rename(src string, dst string, account *model.Account) error {
-	srcFile, err := driver.File(src, account)
-	if err != nil {
-		return err
-	}
-
-	var queryParam map[string]string
-	fullUrl := API_URL
-	method := http.MethodPost
-	if isFamily(account) {
-		fullUrl += "/family/file"
-		method = http.MethodGet
-	}
-	if srcFile.IsDir() {
+	if srcObj.IsDir() {
 		fullUrl += "/renameFolder.action"
-		queryParam = map[string]string{
-			"folderId":       srcFile.Id,
-			"destFolderName": filepath.Base(dst),
-		}
+		queryParam["folderId"] = srcObj.GetID()
+		queryParam["destFolderName"] = newName
 	} else {
 		fullUrl += "/renameFile.action"
-		queryParam = map[string]string{
-			"fileId":       srcFile.Id,
-			"destFileName": filepath.Base(dst),
-		}
+		queryParam["fileId"] = srcObj.GetID()
+		queryParam["destFileName"] = newName
 	}
-
-	_, err = GetState(account).Request(method, fullUrl, nil, func(r *resty.Request) {
-		r.SetQueryParams(queryParam).SetQueryParams(clientSuffix())
-		if isFamily(account) {
-			r.SetQueryParam("familyId", account.SiteId)
-		}
-	}, account)
+	_, err := y.request(fullUrl, method, func(req *resty.Request) {
+		req.SetContext(ctx)
+		req.SetQueryParams(queryParam)
+	}, nil, nil)
 	return err
 }
 
-func (driver Cloud189) Copy(src string, dst string, account *model.Account) error {
-	srcFile, err := driver.File(src, account)
-	if err != nil {
-		return err
-	}
-
-	dstDirFile, err := driver.File(filepath.Dir(dst), account)
-	if err != nil {
-		return err
-	}
-
-	_, err = GetState(account).Request(http.MethodPost, API_URL+"/batch/createBatchTask.action", nil, func(r *resty.Request) {
-		r.SetFormData(clientSuffix()).SetFormData(map[string]string{
+func (y *Yun189PC) Copy(ctx context.Context, srcObj, dstDir model.Obj) error {
+	_, err := y.post(API_URL+"/batch/createBatchTask.action", func(req *resty.Request) {
+		req.SetContext(ctx)
+		req.SetFormData(map[string]string{
 			"type": "COPY",
-			"taskInfos": string(MustToBytes(utils.Json.Marshal(
-				[]*BatchTaskInfo{
+			"taskInfos": MustString(utils.Json.MarshalToString(
+				[]BatchTaskInfo{
 					{
-						FileId:   srcFile.Id,
-						FileName: srcFile.Name,
-						IsFolder: BoolToNumber(srcFile.IsDir()),
+						FileId:   srcObj.GetID(),
+						FileName: srcObj.GetName(),
+						IsFolder: BoolToNumber(srcObj.IsDir()),
 					},
-				}))),
-			"targetFolderId": dstDirFile.Id,
-			"targetFileName": filepath.Base(dst),
+				})),
+			"targetFolderId": dstDir.GetID(),
+			"targetFileName": dstDir.GetName(),
 		})
-		if isFamily(account) {
-			r.SetFormData(map[string]string{
-				"familyId": account.SiteId,
+		if y.isFamily() {
+			req.SetFormData(map[string]string{
+				"familyId": y.FamilyID,
 			})
 		}
-	}, account)
+	}, nil)
 	return err
 }
 
-func (driver Cloud189) Delete(path string, account *model.Account) error {
-	path = utils.ParsePath(path)
-	srcFile, err := driver.File(path, account)
-	if err != nil {
-		return err
-	}
-
-	_, err = GetState(account).Request(http.MethodPost, API_URL+"/batch/createBatchTask.action", nil, func(r *resty.Request) {
-		r.SetFormData(clientSuffix()).SetFormData(map[string]string{
+func (y *Yun189PC) Remove(ctx context.Context, obj model.Obj) error {
+	_, err := y.post(API_URL+"/batch/createBatchTask.action", func(req *resty.Request) {
+		req.SetContext(ctx)
+		req.SetFormData(map[string]string{
 			"type": "DELETE",
-			"taskInfos": string(MustToBytes(utils.Json.Marshal(
+			"taskInfos": MustString(utils.Json.MarshalToString(
 				[]*BatchTaskInfo{
 					{
-						FileId:   srcFile.Id,
-						FileName: srcFile.Name,
-						IsFolder: BoolToNumber(srcFile.IsDir()),
+						FileId:   obj.GetID(),
+						FileName: obj.GetName(),
+						IsFolder: BoolToNumber(obj.IsDir()),
 					},
-				}))),
+				})),
 		})
 
-		if isFamily(account) {
-			r.SetFormData(map[string]string{
-				"familyId": account.SiteId,
+		if y.isFamily() {
+			req.SetFormData(map[string]string{
+				"familyId": y.FamilyID,
 			})
 		}
-	}, account)
+	}, nil)
 	return err
 }
 
-func (driver Cloud189) Upload(file *model.FileStream, account *model.Account) error {
-	if file == nil {
-		return base.ErrEmptyFile
+func (y *Yun189PC) Put(ctx context.Context, dstDir model.Obj, stream model.FileStreamer, up driver.UpdateProgress) error {
+	if y.RapidUpload {
+		return y.FastUpload(ctx, dstDir, stream, up)
 	}
-
-	parentFile, err := driver.File(file.ParentPath, account)
-	if err != nil {
-		return err
-	}
-	if !parentFile.IsDir() {
-		return base.ErrNotFolder
-	}
-
-	if account.Bool1 {
-		return driver.FastUpload(file, parentFile, account)
-	}
-	return driver.CommonUpload(file, parentFile, account)
-	/*
-		if isFamily(account) {
-			return driver.uploadFamily(file, parentFile, account)
-		}
-		return driver.uploadPerson(file, parentFile, account)
-	*/
+	return y.CommonUpload(ctx, dstDir, stream, up)
 }
-
-func (driver Cloud189) CommonUpload(file *model.FileStream, parentFile *model.File, account *model.Account) error {
-	// 初始化上传
-	state := GetState(account)
-	const DEFAULT int64 = 10485760
-	count := int(math.Ceil(float64(file.Size) / float64(DEFAULT)))
-
-	params := Params{
-		"parentFolderId": parentFile.Id,
-		"fileName":       url.PathEscape(file.Name),
-		"fileSize":       fmt.Sprint(file.Size),
-		"sliceSize":      fmt.Sprint(DEFAULT),
-		"lazyCheck":      "1",
-	}
-
-	fullUrl := UPLOAD_URL
-	if isFamily(account) {
-		params.Set("familyId", account.SiteId)
-		fullUrl += "/family"
-	} else {
-		//params.Set("extend", `{"opScene":"1","relativepath":"","rootfolderid":""}`)
-		fullUrl += "/person"
-	}
-
-	var initMultiUpload InitMultiUploadResp
-	_, err := state.Request(http.MethodGet, fullUrl+"/initMultiUpload", params, func(r *resty.Request) { r.SetQueryParams(clientSuffix()).SetResult(&initMultiUpload) }, account)
-	if err != nil {
-		return err
-	}
-
-	fileMd5 := md5.New()
-	silceMd5 := md5.New()
-	silceMd5Hexs := make([]string, 0, count)
-	byteData := bytes.NewBuffer(make([]byte, DEFAULT))
-	for i := 1; i <= count; i++ {
-		byteData.Reset()
-		silceMd5.Reset()
-		if n, err := io.CopyN(io.MultiWriter(fileMd5, silceMd5, byteData), file, DEFAULT); err != io.EOF && n == 0 {
-			return err
-		}
-		md5Bytes := silceMd5.Sum(nil)
-		silceMd5Hexs = append(silceMd5Hexs, strings.ToUpper(hex.EncodeToString(md5Bytes)))
-		silceMd5Base64 := base64.StdEncoding.EncodeToString(md5Bytes)
-
-		var uploadUrl UploadUrlsResp
-		_, err = state.Request(http.MethodGet, fullUrl+"/getMultiUploadUrls",
-			Params{"partInfo": fmt.Sprintf("%d-%s", i, silceMd5Base64), "uploadFileId": initMultiUpload.Data.UploadFileID},
-			func(r *resty.Request) { r.SetQueryParams(clientSuffix()).SetResult(&uploadUrl) },
-			account)
-		if err != nil {
-			return err
-		}
-
-		uploadData := uploadUrl.UploadUrls[fmt.Sprint("partNumber_", i)]
-		req, _ := http.NewRequest(http.MethodPut, uploadData.RequestURL, byteData)
-		req.Header.Del("User-Agent")
-		for k, v := range ParseHttpHeader(uploadData.RequestHeader) {
-			req.Header.Set(k, v)
-		}
-		for k, v := range clientSuffix() {
-			req.URL.RawQuery += fmt.Sprintf("&%s=%s", k, v)
-		}
-		r, err := base.HttpClient.Do(req)
-		if err != nil {
-			return err
-		}
-		if r.StatusCode != http.StatusOK {
-			data, _ := io.ReadAll(r.Body)
-			r.Body.Close()
-			return fmt.Errorf(string(data))
-		}
-		r.Body.Close()
-	}
-
-	fileMd5Hex := strings.ToUpper(hex.EncodeToString(fileMd5.Sum(nil)))
-	sliceMd5Hex := fileMd5Hex
-	if int64(file.Size) > DEFAULT {
-		sliceMd5Hex = strings.ToUpper(utils.GetMD5Encode(strings.Join(silceMd5Hexs, "\n")))
-	}
-
-	_, err = state.Request(http.MethodGet, fullUrl+"/commitMultiUploadFile",
-		Params{
-			"uploadFileId": initMultiUpload.Data.UploadFileID,
-			"fileMd5":      fileMd5Hex,
-			"sliceMd5":     sliceMd5Hex,
-			"lazyCheck":    "1",
-			"isLog":        "0",
-			"opertype":     "3",
-		},
-		func(r *resty.Request) { r.SetQueryParams(clientSuffix()) }, account)
-	return err
-}
-
-func (driver Cloud189) FastUpload(file *model.FileStream, parentFile *model.File, account *model.Account) error {
-	tempFile, err := ioutil.TempFile(conf.Conf.TempDir, "file-*")
-	if err != nil {
-		return err
-	}
-	defer tempFile.Close()
-	defer os.Remove(tempFile.Name())
-
-	// 初始化上传
-	state := GetState(account)
-
-	const DEFAULT int64 = 10485760
-	count := int(math.Ceil(float64(file.Size) / float64(DEFAULT)))
-
-	// 优先计算所需信息
-	fileMd5 := md5.New()
-	silceMd5 := md5.New()
-	silceMd5Hexs := make([]string, 0, count)
-	silceMd5Base64s := make([]string, 0, count)
-	for i := 1; i <= count; i++ {
-		silceMd5.Reset()
-		if n, err := io.CopyN(io.MultiWriter(fileMd5, silceMd5, tempFile), file, DEFAULT); err != nil && n == 0 {
-			return err
-		}
-		md5Byte := silceMd5.Sum(nil)
-		silceMd5Hexs = append(silceMd5Hexs, strings.ToUpper(hex.EncodeToString(md5Byte)))
-		silceMd5Base64s = append(silceMd5Base64s, fmt.Sprint(i, "-", base64.StdEncoding.EncodeToString(md5Byte)))
-	}
-	fileMd5Hex := strings.ToUpper(hex.EncodeToString(fileMd5.Sum(nil)))
-	sliceMd5Hex := fileMd5Hex
-	if int64(file.Size) > DEFAULT {
-		sliceMd5Hex = strings.ToUpper(utils.GetMD5Encode(strings.Join(silceMd5Hexs, "\n")))
-	}
-
-	params := Params{
-		"parentFolderId": parentFile.Id,
-		"fileName":       url.PathEscape(file.Name),
-		"fileSize":       fmt.Sprint(file.Size),
-		"fileMd5":        fileMd5Hex,
-		"sliceSize":      fmt.Sprint(DEFAULT),
-		"sliceMd5":       sliceMd5Hex,
-	}
-
-	fullUrl := UPLOAD_URL
-	if isFamily(account) {
-		params.Set("familyId", account.SiteId)
-		fullUrl += "/family"
-	} else {
-		//params.Set("extend", `{"opScene":"1","relativepath":"","rootfolderid":""}`)
-		fullUrl += "/person"
-	}
-
-	var uploadInfo InitMultiUploadResp
-	_, err = state.Request(http.MethodGet, fullUrl+"/initMultiUpload", params, func(r *resty.Request) { r.SetQueryParams(clientSuffix()).SetResult(&uploadInfo) }, account)
-	if err != nil {
-		return err
-	}
-
-	if uploadInfo.Data.FileDataExists != 1 {
-		var uploadUrls UploadUrlsResp
-		_, err := state.Request(http.MethodGet, fullUrl+"/getMultiUploadUrls",
-			Params{
-				"uploadFileId": uploadInfo.Data.UploadFileID,
-				"partInfo":     strings.Join(silceMd5Base64s, ","),
-			},
-			func(r *resty.Request) { r.SetQueryParams(clientSuffix()).SetResult(&uploadUrls) },
-			account)
-		if err != nil {
-			return err
-		}
-		for i := 1; i <= count; i++ {
-			uploadData := uploadUrls.UploadUrls[fmt.Sprint("partNumber_", i)]
-			req, _ := http.NewRequest(http.MethodPut, uploadData.RequestURL, io.NewSectionReader(tempFile, int64(i-1)*DEFAULT, DEFAULT))
-			req.Header.Del("User-Agent")
-			for k, v := range ParseHttpHeader(uploadData.RequestHeader) {
-				req.Header.Set(k, v)
-			}
-			for k, v := range clientSuffix() {
-				req.URL.RawQuery += fmt.Sprintf("&%s=%s", k, v)
-			}
-			r, err := base.HttpClient.Do(req)
-			if err != nil {
-				return err
-			}
-			if r.StatusCode != http.StatusOK {
-				data, _ := io.ReadAll(r.Body)
-				r.Body.Close()
-				return fmt.Errorf(string(data))
-			}
-			r.Body.Close()
-		}
-	}
-
-	_, err = state.Request(http.MethodGet, fullUrl+"/commitMultiUploadFile",
-		Params{
-			"uploadFileId": uploadInfo.Data.UploadFileID,
-			"isLog":        "0",
-			"opertype":     "3",
-		},
-		func(r *resty.Request) { r.SetQueryParams(clientSuffix()) },
-		account)
-	return err
-}
-
-/*
-func (driver Cloud189) uploadFamily(file *model.FileStream, parentFile *model.File, account *model.Account) error {
-	tempFile, err := ioutil.TempFile(conf.Conf.TempDir, "file-*")
-	if err != nil {
-		return err
-	}
-
-	defer tempFile.Close()
-	defer os.Remove(tempFile.Name())
-
-	fileMd5 := md5.New()
-	if _, err = io.Copy(io.MultiWriter(fileMd5, tempFile), file); err != nil {
-		return err
-	}
-
-	client := GetState(account)
-	var createUpload CreateUploadFileResult
-	_, err = client.Request(http.MethodGet, API_URL+"/family/file/createFamilyFile.action", nil, func(r *resty.Request) {
-		r.SetQueryParams(map[string]string{
-			"fileMd5":      hex.EncodeToString(fileMd5.Sum(nil)),
-			"fileName":     file.Name,
-			"familyId":     account.SiteId,
-			"parentId":     parentFile.Id,
-			"resumePolicy": "1",
-			"fileSize":     fmt.Sprint(file.Size),
-		})
-		r.SetQueryParams(clientSuffix())
-		r.SetResult(&createUpload)
-	}, account)
-	if err != nil {
-		return err
-	}
-
-	if createUpload.FileDataExists != 1 {
-		if createUpload.UploadFileId, err = driver.uploadFileData(file, tempFile, createUpload, account); err != nil {
-			return err
-		}
-	}
-
-	_, err = client.Request(http.MethodGet, createUpload.FileCommitUrl, nil, func(r *resty.Request) {
-		r.SetQueryParams(clientSuffix())
-		r.SetHeaders(map[string]string{
-			"FamilyId":     account.SiteId,
-			"uploadFileId": fmt.Sprint(createUpload.UploadFileId),
-			"ResumePolicy": "1",
-		})
-	}, account)
-	return err
-}
-
-func (driver Cloud189) uploadPerson(file *model.FileStream, parentFile *model.File, account *model.Account) error {
-	tempFile, err := ioutil.TempFile(conf.Conf.TempDir, "file-*")
-	if err != nil {
-		return err
-	}
-
-	defer tempFile.Close()
-	defer os.Remove(tempFile.Name())
-
-	fileMd5 := md5.New()
-	if _, err = io.Copy(io.MultiWriter(fileMd5, tempFile), file); err != nil {
-		return err
-	}
-
-	client := GetState(account)
-	var createUpload CreateUploadFileResult
-	_, err = client.Request(http.MethodPost, API_URL+"/createUploadFile.action", nil, func(r *resty.Request) {
-		r.SetQueryParams(clientSuffix())
-		r.SetFormData(clientSuffix()).SetFormData(map[string]string{
-			"parentFolderId": parentFile.Id,
-			"baseFileId":     "",
-			"fileName":       file.Name,
-			"size":           fmt.Sprint(file.Size),
-			"md5":            hex.EncodeToString(fileMd5.Sum(nil)),
-			//  "lastWrite":      param.LastWrite,
-			//	"localPath":      strings.ReplaceAll(file.ParentPath, "\\", "/"),
-			"opertype":     "1",
-			"flag":         "1",
-			"resumePolicy": "1",
-			"isLog":        "0",
-			"fileExt":      "",
-		})
-		r.SetResult(&createUpload)
-	}, account)
-	if err != nil {
-		return err
-	}
-
-	if createUpload.FileDataExists != 1 {
-		if createUpload.UploadFileId, err = driver.uploadFileData(file, tempFile, createUpload, account); err != nil {
-			return err
-		}
-	}
-
-	_, err = client.Request(http.MethodPost, createUpload.FileCommitUrl, nil, func(r *resty.Request) {
-		r.SetQueryParams(clientSuffix())
-		r.SetFormData(map[string]string{
-			"uploadFileId": fmt.Sprint(createUpload.UploadFileId),
-			"opertype":     "5", //5 覆盖 1 重命名
-			"ResumePolicy": "1",
-			"isLog":        "0",
-		})
-	}, account)
-	return err
-}
-
-func (driver Cloud189) uploadFileData(file *model.FileStream, tempFile *os.File, createUpload CreateUploadFileResult, account *model.Account) (int64, error) {
-	uploadFileState, err := driver.getUploadFileState(createUpload.UploadFileId, account)
-	if err != nil {
-		return 0, err
-	}
-
-	if uploadFileState.FileDataExists == 1 || uploadFileState.DataSize == int64(file.Size) {
-		return uploadFileState.UploadFileId, nil
-	}
-
-	if _, err = tempFile.Seek(uploadFileState.DataSize, io.SeekStart); err != nil {
-		return 0, err
-	}
-
-	_, err = GetState(account).Request("PUT", uploadFileState.FileUploadUrl, nil, func(r *resty.Request) {
-		r.SetQueryParams(clientSuffix())
-		r.SetHeaders(map[string]string{
-			"Content-Type":           "application/octet-stream",
-			"ResumePolicy":           "1",
-			"Edrive-UploadFileRange": fmt.Sprintf("bytes=%d-%d", uploadFileState.DataSize, file.Size),
-			"Expect":                 "100-continue",
-		})
-		if isFamily(account) {
-			r.SetHeaders(map[string]string{
-				"familyId":     account.SiteId,
-				"UploadFileId": fmt.Sprint(uploadFileState.UploadFileId),
-			})
-		} else {
-			r.SetHeader("Edrive-UploadFileId", fmt.Sprint(uploadFileState.UploadFileId))
-		}
-		r.SetBody(tempFile)
-	}, account)
-	return uploadFileState.UploadFileId, err
-}
-
-func (driver Cloud189) getUploadFileState(uploadFileId int64, account *model.Account) (*UploadFileStatusResult, error) {
-	fullUrl := API_URL
-	if isFamily(account) {
-		fullUrl += "/family/file/getFamilyFileStatus.action"
-	} else {
-		fullUrl += "/getUploadFileStatus.action"
-	}
-	var uploadFileState UploadFileStatusResult
-	_, err := GetState(account).Request(http.MethodGet, fullUrl, nil, func(r *resty.Request) {
-		r.SetQueryParams(clientSuffix())
-		r.SetQueryParams(map[string]string{
-			"uploadFileId": fmt.Sprint(uploadFileId),
-			"resumePolicy": "1",
-		})
-		if isFamily(account) {
-			r.SetQueryParam("familyId", account.SiteId)
-		}
-		r.SetResult(&uploadFileState)
-	}, account)
-	if err != nil {
-		return nil, err
-	}
-	return &uploadFileState, nil
-}*/
-
-var _ base.Driver = (*Cloud189)(nil)

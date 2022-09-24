@@ -1,243 +1,144 @@
 package quark
 
 import (
+	"context"
 	"crypto/md5"
 	"crypto/sha1"
 	"encoding/hex"
-	"github.com/Xhofe/alist/conf"
-	"github.com/Xhofe/alist/drivers/base"
-	"github.com/Xhofe/alist/model"
-	"github.com/Xhofe/alist/utils"
-	log "github.com/sirupsen/logrus"
 	"io"
-	"io/ioutil"
+	"net/http"
 	"os"
-	"path/filepath"
+	"time"
+
+	"github.com/alist-org/alist/v3/drivers/base"
+	"github.com/alist-org/alist/v3/internal/driver"
+	"github.com/alist-org/alist/v3/internal/errs"
+	"github.com/alist-org/alist/v3/internal/model"
+	"github.com/alist-org/alist/v3/pkg/utils"
+	"github.com/go-resty/resty/v2"
+	log "github.com/sirupsen/logrus"
 )
 
-type Quark struct{}
-
-func (driver Quark) Config() base.DriverConfig {
-	return base.DriverConfig{
-		Name:      "Quark",
-		OnlyProxy: true,
-	}
+type Quark struct {
+	model.Storage
+	Addition
 }
 
-func (driver Quark) Items() []base.Item {
-	return []base.Item{
-		{
-			Name:        "access_token",
-			Label:       "Cookie",
-			Type:        base.TypeString,
-			Required:    true,
-			Description: "Unknown expiration time",
-		},
-		{
-			Name:     "root_folder",
-			Label:    "root folder file_id",
-			Type:     base.TypeString,
-			Required: true,
-			Default:  "0",
-		},
-		{
-			Name:     "order_by",
-			Label:    "order_by",
-			Type:     base.TypeSelect,
-			Values:   "file_type,file_name,updated_at",
-			Required: true,
-			Default:  "file_name",
-		},
-		{
-			Name:     "order_direction",
-			Label:    "order_direction",
-			Type:     base.TypeSelect,
-			Values:   "asc,desc",
-			Required: true,
-			Default:  "asc",
-		},
-	}
+func (d *Quark) Config() driver.Config {
+	return config
 }
 
-func (driver Quark) Save(account *model.Account, old *model.Account) error {
-	if account == nil {
-		return nil
+func (d *Quark) GetAddition() driver.Additional {
+	return d.Addition
+}
+
+func (d *Quark) Init(ctx context.Context, storage model.Storage) error {
+	d.Storage = storage
+	err := utils.Json.UnmarshalFromString(d.Storage.Addition, &d.Addition)
+	if err != nil {
+		return err
 	}
-	_, err := driver.Get("/config", nil, nil, account)
-	if err == nil {
-		account.Status = "work"
-	} else {
-		account.Status = err.Error()
-	}
-	_ = model.SaveAccount(account)
+	_, err = d.request("/config", http.MethodGet, nil, nil)
 	return err
 }
 
-func (driver Quark) File(path string, account *model.Account) (*model.File, error) {
-	path = utils.ParsePath(path)
-	if path == "/" {
-		return &model.File{
-			Id:        account.RootFolder,
-			Name:      account.Name,
-			Size:      0,
-			Type:      conf.FOLDER,
-			Driver:    driver.Config().Name,
-			UpdatedAt: account.UpdatedAt,
-		}, nil
-	}
-	dir, name := filepath.Split(path)
-	files, err := driver.Files(dir, account)
+func (d *Quark) Drop(ctx context.Context) error {
+	return nil
+}
+
+func (d *Quark) List(ctx context.Context, dir model.Obj, args model.ListArgs) ([]model.Obj, error) {
+	files, err := d.GetFiles(dir.GetID())
 	if err != nil {
 		return nil, err
 	}
-	for _, file := range files {
-		if file.Name == name {
-			return &file, nil
-		}
-	}
-	return nil, base.ErrPathNotFound
+	return utils.SliceConvert(files, func(src File) (model.Obj, error) {
+		return fileToObj(src), nil
+	})
 }
 
-func (driver Quark) Files(path string, account *model.Account) ([]model.File, error) {
-	path = utils.ParsePath(path)
-	var files []model.File
-	cache, err := base.GetCache(path, account)
-	if err == nil {
-		files, _ = cache.([]model.File)
-	} else {
-		file, err := driver.File(path, account)
-		if err != nil {
-			return nil, err
-		}
-		files, err = driver.GetFiles(file.Id, account)
-		if err != nil {
-			return nil, err
-		}
-		if len(files) > 0 {
-			_ = base.SetCache(path, files, account)
-		}
-	}
-	return files, nil
-}
+//func (d *Quark) Get(ctx context.Context, path string) (model.Obj, error) {
+//	// TODO this is optional
+//	return nil, errs.NotImplement
+//}
 
-func (driver Quark) Link(args base.Args, account *model.Account) (*base.Link, error) {
-	path := args.Path
-	file, err := driver.File(path, account)
-	if err != nil {
-		return nil, err
-	}
+func (d *Quark) Link(ctx context.Context, file model.Obj, args model.LinkArgs) (*model.Link, error) {
 	data := base.Json{
-		"fids": []string{file.Id},
+		"fids": []string{file.GetID()},
 	}
 	var resp DownResp
-	_, err = driver.Post("/file/download", data, &resp, account)
+	_, err := d.request("/file/download", http.MethodPost, func(req *resty.Request) {
+		req.SetBody(data)
+	}, &resp)
 	if err != nil {
 		return nil, err
 	}
-	return &base.Link{
-		Url: resp.Data[0].DownloadUrl,
-		Headers: []base.Header{
-			{Name: "Cookie", Value: account.AccessToken},
-			{Name: "Referer", Value: "https://pan.quark.cn"},
+	return &model.Link{
+		URL: resp.Data[0].DownloadUrl,
+		Header: http.Header{
+			"Cookie":  []string{d.Cookie},
+			"Referer": []string{"https://pan.quark.cn"},
 		},
 	}, nil
 }
 
-func (driver Quark) Path(path string, account *model.Account) (*model.File, []model.File, error) {
-	path = utils.ParsePath(path)
-	log.Debugf("quark path: %s", path)
-	file, err := driver.File(path, account)
-	if err != nil {
-		return nil, nil, err
-	}
-	if !file.IsDir() {
-		return file, nil, nil
-	}
-	files, err := driver.Files(path, account)
-	if err != nil {
-		return nil, nil, err
-	}
-	return nil, files, nil
-}
-
-func (driver Quark) Preview(path string, account *model.Account) (interface{}, error) {
-	return nil, base.ErrNotSupport
-}
-
-func (driver Quark) MakeDir(path string, account *model.Account) error {
-	parentFile, err := driver.File(utils.Dir(path), account)
-	if err != nil {
-		return err
-	}
+func (d *Quark) MakeDir(ctx context.Context, parentDir model.Obj, dirName string) error {
 	data := base.Json{
 		"dir_init_lock": false,
 		"dir_path":      "",
-		"file_name":     utils.Base(path),
-		"pdir_fid":      parentFile.Id,
+		"file_name":     dirName,
+		"pdir_fid":      parentDir.GetID(),
 	}
-	_, err = driver.Post("/file", data, nil, account)
+	_, err := d.request("/file", http.MethodPost, func(req *resty.Request) {
+		req.SetBody(data)
+	}, nil)
+	if err == nil {
+		time.Sleep(time.Second)
+	}
 	return err
 }
 
-func (driver Quark) Move(src string, dst string, account *model.Account) error {
-	srcFile, err := driver.File(src, account)
-	if err != nil {
-		return err
-	}
-	dstParentFile, err := driver.File(utils.Dir(dst), account)
-	if err != nil {
-		return err
-	}
+func (d *Quark) Move(ctx context.Context, srcObj, dstDir model.Obj) error {
 	data := base.Json{
 		"action_type":  1,
 		"exclude_fids": []string{},
-		"filelist":     []string{srcFile.Id},
-		"to_pdir_fid":  dstParentFile.Id,
+		"filelist":     []string{srcObj.GetID()},
+		"to_pdir_fid":  dstDir.GetID(),
 	}
-	_, err = driver.Post("/file/move", data, nil, account)
+	_, err := d.request("/file/move", http.MethodPost, func(req *resty.Request) {
+		req.SetBody(data)
+	}, nil)
 	return err
 }
 
-func (driver Quark) Rename(src string, dst string, account *model.Account) error {
-	srcFile, err := driver.File(src, account)
-	if err != nil {
-		return err
-	}
+func (d *Quark) Rename(ctx context.Context, srcObj model.Obj, newName string) error {
 	data := base.Json{
-		"fid":       srcFile.Id,
-		"file_name": utils.Base(dst),
+		"fid":       srcObj.GetID(),
+		"file_name": newName,
 	}
-	_, err = driver.Post("/file/rename", data, nil, account)
+	_, err := d.request("/file/rename", http.MethodPost, func(req *resty.Request) {
+		req.SetBody(data)
+	}, nil)
 	return err
 }
 
-func (driver Quark) Copy(src string, dst string, account *model.Account) error {
-	return base.ErrNotSupport
+func (d *Quark) Copy(ctx context.Context, srcObj, dstDir model.Obj) error {
+	return errs.NotSupport
 }
 
-func (driver Quark) Delete(path string, account *model.Account) error {
-	srcFile, err := driver.File(path, account)
-	if err != nil {
-		return err
-	}
+func (d *Quark) Remove(ctx context.Context, obj model.Obj) error {
 	data := base.Json{
 		"action_type":  1,
 		"exclude_fids": []string{},
-		"filelist":     []string{srcFile.Id},
+		"filelist":     []string{obj.GetID()},
 	}
-	_, err = driver.Post("/file/delete", data, nil, account)
+	_, err := d.request("/file/delete", http.MethodPost, func(req *resty.Request) {
+		req.SetBody(data)
+	}, nil)
 	return err
 }
 
-func (driver Quark) Upload(file *model.FileStream, account *model.Account) error {
-	if file == nil {
-		return base.ErrEmptyFile
-	}
-	parentFile, err := driver.File(file.ParentPath, account)
-	if err != nil {
-		return err
-	}
-	tempFile, err := ioutil.TempFile(conf.Conf.TempDir, "file-*")
+func (d *Quark) Put(ctx context.Context, dstDir model.Obj, stream model.FileStreamer, up driver.UpdateProgress) error {
+	tempFile, err := utils.CreateTempFile(stream.GetReadCloser())
 	if err != nil {
 		return err
 	}
@@ -245,14 +146,6 @@ func (driver Quark) Upload(file *model.FileStream, account *model.Account) error
 		_ = tempFile.Close()
 		_ = os.Remove(tempFile.Name())
 	}()
-	_, err = io.Copy(tempFile, file)
-	if err != nil {
-		return err
-	}
-	_, err = tempFile.Seek(0, io.SeekStart)
-	if err != nil {
-		return err
-	}
 	m := md5.New()
 	_, err = io.Copy(m, tempFile)
 	if err != nil {
@@ -274,13 +167,13 @@ func (driver Quark) Upload(file *model.FileStream, account *model.Account) error
 	}
 	sha1Str := hex.EncodeToString(s.Sum(nil))
 	// pre
-	pre, err := driver.UpPre(file, parentFile.Id, account)
+	pre, err := d.upPre(stream, dstDir.GetID())
 	if err != nil {
 		return err
 	}
 	log.Debugln("hash: ", md5Str, sha1Str)
 	// hash
-	finish, err := driver.UpHash(md5Str, sha1Str, pre.Data.TaskId, account)
+	finish, err := d.upHash(md5Str, sha1Str, pre.Data.TaskId)
 	if err != nil {
 		return err
 	}
@@ -292,8 +185,9 @@ func (driver Quark) Upload(file *model.FileStream, account *model.Account) error
 	var bytes []byte
 	md5s := make([]string, 0)
 	defaultBytes := make([]byte, partSize)
-	left := int64(file.GetSize())
+	left := stream.GetSize()
 	partNumber := 1
+	sizeDivide100 := stream.GetSize() / 100
 	for left > 0 {
 		if left > int64(partSize) {
 			bytes = defaultBytes
@@ -306,7 +200,7 @@ func (driver Quark) Upload(file *model.FileStream, account *model.Account) error
 		}
 		left -= int64(partSize)
 		log.Debugf("left: %d", left)
-		m, err := driver.UpPart(pre, file.GetMIMEType(), partNumber, bytes, account)
+		m, err := d.upPart(pre, stream.GetMimetype(), partNumber, bytes)
 		//m, err := driver.UpPart(pre, file.GetMIMEType(), partNumber, bytes, account, md5Str, sha1Str)
 		if err != nil {
 			return err
@@ -316,12 +210,13 @@ func (driver Quark) Upload(file *model.FileStream, account *model.Account) error
 		}
 		md5s = append(md5s, m)
 		partNumber++
+		up(100 - int(left/sizeDivide100))
 	}
-	err = driver.UpCommit(pre, md5s, account)
+	err = d.upCommit(pre, md5s)
 	if err != nil {
 		return err
 	}
-	return driver.UpFinish(pre, account)
+	return d.upFinish(pre)
 }
 
-var _ base.Driver = (*Quark)(nil)
+var _ driver.Driver = (*Quark)(nil)

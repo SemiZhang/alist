@@ -1,237 +1,142 @@
 package uss
 
 import (
+	"context"
 	"fmt"
-	"github.com/Xhofe/alist/conf"
-	"github.com/Xhofe/alist/drivers/base"
-	"github.com/Xhofe/alist/model"
-	"github.com/Xhofe/alist/utils"
-	log "github.com/sirupsen/logrus"
-	"github.com/upyun/go-sdk/v3/upyun"
 	"net/url"
-	"path/filepath"
+	"path"
 	"strings"
 	"time"
+
+	"github.com/alist-org/alist/v3/internal/driver"
+	"github.com/alist-org/alist/v3/internal/model"
+	"github.com/alist-org/alist/v3/pkg/utils"
+	"github.com/upyun/go-sdk/v3/upyun"
 )
 
 type USS struct {
+	model.Storage
+	Addition
+	client *upyun.UpYun
 }
 
-func (driver USS) Config() base.DriverConfig {
-	return base.DriverConfig{
-		Name:      "USS",
-		LocalSort: true,
-	}
+func (d *USS) Config() driver.Config {
+	return config
 }
 
-func (driver USS) Items() []base.Item {
-	return []base.Item{
-		{
-			Name:     "bucket",
-			Label:    "Bucket",
-			Type:     base.TypeString,
-			Required: true,
-		},
-		{
-			Name:     "endpoint",
-			Label:    "Endpoint",
-			Type:     base.TypeString,
-			Required: true,
-		},
-		{
-			Name:     "access_key",
-			Label:    "Operator Name",
-			Type:     base.TypeString,
-			Required: true,
-		},
-		{
-			Name:     "access_secret",
-			Label:    "Operator Password",
-			Type:     base.TypeString,
-			Required: true,
-		},
-		{
-			Name:     "root_folder",
-			Label:    "root folder path",
-			Type:     base.TypeString,
-			Required: false,
-		},
-		{
-			Name:  "custom_host",
-			Label: "Custom Host",
-			Type:  base.TypeString,
-		},
-		{
-			Name:        "limit",
-			Label:       "Sign url expire time(hours)",
-			Type:        base.TypeNumber,
-			Default:     "4",
-			Description: "default 4 hours",
-		},
-		//{
-		//	Name:        "zone",
-		//	Label:       "placeholder filename",
-		//	Type:        base.TypeString,
-		//	Description: "default empty string",
-		//},
-	}
+func (d *USS) GetAddition() driver.Additional {
+	return d.Addition
 }
 
-func (driver USS) Save(account *model.Account, old *model.Account) error {
-	if account == nil {
-		return nil
-	}
-	if account.Limit == 0 {
-		account.Limit = 4
-	}
-	client, err := driver.NewUpYun(account)
+func (d *USS) Init(ctx context.Context, storage model.Storage) error {
+	d.Storage = storage
+	err := utils.Json.UnmarshalFromString(d.Storage.Addition, &d.Addition)
 	if err != nil {
-		account.Status = err.Error()
-	} else {
-		clientsMap[account.Name] = client
-		account.Status = "work"
+		return err
 	}
-	_ = model.SaveAccount(account)
-	return err
+	d.client = upyun.NewUpYun(&upyun.UpYunConfig{
+		Bucket:   d.Bucket,
+		Operator: d.OperatorName,
+		Password: d.OperatorPassword,
+	})
+	return nil
 }
 
-func (driver USS) File(path string, account *model.Account) (*model.File, error) {
-	path = utils.ParsePath(path)
-	if path == "/" {
-		return &model.File{
-			Id:        account.RootFolder,
-			Name:      account.Name,
-			Size:      0,
-			Type:      conf.FOLDER,
-			Driver:    driver.Config().Name,
-			UpdatedAt: account.UpdatedAt,
-		}, nil
-	}
-	dir, name := filepath.Split(path)
-	files, err := driver.Files(dir, account)
+func (d *USS) Drop(ctx context.Context) error {
+	return nil
+}
+
+func (d *USS) List(ctx context.Context, dir model.Obj, args model.ListArgs) ([]model.Obj, error) {
+	prefix := getKey(dir.GetPath(), true)
+	objsChan := make(chan *upyun.FileInfo, 10)
+	var err error
+	defer close(objsChan)
+	go func() {
+		err = d.client.List(&upyun.GetObjectsConfig{
+			Path:           prefix,
+			ObjectsChan:    objsChan,
+			MaxListObjects: 0,
+			MaxListLevel:   1,
+		})
+	}()
 	if err != nil {
 		return nil, err
 	}
-	for _, file := range files {
-		if file.Name == name {
-			return &file, nil
+	res := make([]model.Obj, 0)
+	for obj := range objsChan {
+		t := obj.Time
+		f := model.Object{
+			Name:     obj.Name,
+			Size:     obj.Size,
+			Modified: t,
+			IsFolder: obj.IsDir,
 		}
+		res = append(res, &f)
 	}
-	return nil, base.ErrPathNotFound
+	return res, err
 }
 
-func (driver USS) Files(path string, account *model.Account) ([]model.File, error) {
-	path = utils.ParsePath(path)
-	var files []model.File
-	cache, err := base.GetCache(path, account)
-	if err == nil {
-		files, _ = cache.([]model.File)
-	} else {
-		files, err = driver.List(path, account)
-		if err == nil && len(files) > 0 {
-			_ = base.SetCache(path, files, account)
-		}
-	}
-	return files, err
-}
+//func (d *USS) Get(ctx context.Context, path string) (model.Obj, error) {
+//	// this is optional
+//	return nil, errs.NotImplement
+//}
 
-func (driver USS) Link(args base.Args, account *model.Account) (*base.Link, error) {
-	key := driver.GetKey(args.Path, account, false)
-	host := account.CustomHost
+func (d *USS) Link(ctx context.Context, file model.Obj, args model.LinkArgs) (*model.Link, error) {
+	key := getKey(file.GetPath(), false)
+	host := d.CustomHost
 	if host == "" {
-		host = account.Endpoint
+		host = d.Endpoint
 	}
 	if strings.Contains(host, "://") {
 		host = "https://" + host
 	}
 	u := fmt.Sprintf("%s/%s", host, key)
-	downExp := time.Hour * time.Duration(account.Limit)
+	downExp := time.Hour * time.Duration(d.SignURLExpire)
 	expireAt := time.Now().Add(downExp).Unix()
-	upd := url.QueryEscape(utils.Base(args.Path))
-	signStr := strings.Join([]string{account.AccessSecret, fmt.Sprint(expireAt), fmt.Sprintf("/%s", key)}, "&")
+	upd := url.QueryEscape(path.Base(file.GetPath()))
+	signStr := strings.Join([]string{d.OperatorPassword, fmt.Sprint(expireAt), fmt.Sprintf("/%s", key)}, "&")
 	upt := utils.GetMD5Encode(signStr)[12:20] + fmt.Sprint(expireAt)
 	link := fmt.Sprintf("%s?_upd=%s&_upt=%s", u, upd, upt)
-	return &base.Link{Url: link}, nil
+	return &model.Link{URL: link}, nil
 }
 
-func (driver USS) Path(path string, account *model.Account) (*model.File, []model.File, error) {
-	path = utils.ParsePath(path)
-	log.Debugf("s3 path: %s", path)
-	file, err := driver.File(path, account)
-	if err != nil {
-		return nil, nil, err
-	}
-	if !file.IsDir() {
-		return file, nil, nil
-	}
-	files, err := driver.Files(path, account)
-	if err != nil {
-		return nil, nil, err
-	}
-	return nil, files, nil
+func (d *USS) MakeDir(ctx context.Context, parentDir model.Obj, dirName string) error {
+	return d.client.Mkdir(getKey(path.Join(parentDir.GetPath(), dirName), true))
 }
 
-func (driver USS) Preview(path string, account *model.Account) (interface{}, error) {
-	return nil, base.ErrNotSupport
-}
-
-func (driver USS) MakeDir(path string, account *model.Account) error {
-	client, err := driver.GetClient(account)
-	if err != nil {
-		return err
-	}
-	return client.Mkdir(driver.GetKey(path, account, true))
-}
-
-func (driver USS) Move(src string, dst string, account *model.Account) error {
-	client, err := driver.GetClient(account)
-	if err != nil {
-		return err
-	}
-	return client.Move(&upyun.MoveObjectConfig{
-		SrcPath:  driver.GetKey(src, account, false),
-		DestPath: driver.GetKey(dst, account, false),
+func (d *USS) Move(ctx context.Context, srcObj, dstDir model.Obj) error {
+	return d.client.Move(&upyun.MoveObjectConfig{
+		SrcPath:  getKey(srcObj.GetPath(), srcObj.IsDir()),
+		DestPath: getKey(path.Join(dstDir.GetPath(), srcObj.GetName()), srcObj.IsDir()),
 	})
 }
 
-func (driver USS) Rename(src string, dst string, account *model.Account) error {
-	return driver.Move(src, dst, account)
-}
-
-func (driver USS) Copy(src string, dst string, account *model.Account) error {
-	client, err := driver.GetClient(account)
-	if err != nil {
-		return err
-	}
-	return client.Copy(&upyun.CopyObjectConfig{
-		SrcPath:  driver.GetKey(src, account, false),
-		DestPath: driver.GetKey(dst, account, false),
+func (d *USS) Rename(ctx context.Context, srcObj model.Obj, newName string) error {
+	return d.client.Move(&upyun.MoveObjectConfig{
+		SrcPath:  getKey(srcObj.GetPath(), srcObj.IsDir()),
+		DestPath: getKey(path.Join(path.Dir(srcObj.GetPath()), newName), srcObj.IsDir()),
 	})
 }
 
-func (driver USS) Delete(path string, account *model.Account) error {
-	client, err := driver.GetClient(account)
-	if err != nil {
-		return err
-	}
-	return client.Delete(&upyun.DeleteObjectConfig{
-		Path:  driver.GetKey(path, account, false),
+func (d *USS) Copy(ctx context.Context, srcObj, dstDir model.Obj) error {
+	return d.client.Copy(&upyun.CopyObjectConfig{
+		SrcPath:  getKey(srcObj.GetPath(), srcObj.IsDir()),
+		DestPath: getKey(path.Join(dstDir.GetPath(), srcObj.GetName()), srcObj.IsDir()),
+	})
+}
+
+func (d *USS) Remove(ctx context.Context, obj model.Obj) error {
+	return d.client.Delete(&upyun.DeleteObjectConfig{
+		Path:  getKey(obj.GetPath(), obj.IsDir()),
 		Async: false,
 	})
 }
 
-func (driver USS) Upload(file *model.FileStream, account *model.Account) error {
-	if file == nil {
-		return base.ErrEmptyFile
-	}
-	client, err := driver.GetClient(account)
-	if err != nil {
-		return err
-	}
-	return client.Put(&upyun.PutObjectConfig{
-		Path:   driver.GetKey(utils.Join(file.ParentPath, file.GetFileName()), account, false),
-		Reader: file,
+func (d *USS) Put(ctx context.Context, dstDir model.Obj, stream model.FileStreamer, up driver.UpdateProgress) error {
+	return d.client.Put(&upyun.PutObjectConfig{
+		Path:   getKey(path.Join(dstDir.GetPath(), stream.GetName()), false),
+		Reader: stream,
 	})
 }
 
-var _ base.Driver = (*USS)(nil)
+var _ driver.Driver = (*USS)(nil)

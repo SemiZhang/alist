@@ -1,5 +1,11 @@
 package quark
 
+import (
+	"time"
+
+	"github.com/alist-org/alist/v3/internal/model"
+)
+
 type Resp struct {
 	Status  int    `json:"status"`
 	Code    int    `json:"code"`
@@ -32,6 +38,16 @@ type File struct {
 	//PrivateExtra struct {} `json:"_private_extra"`
 	//ObjCategory string `json:"obj_category,omitempty"`
 	//Thumbnail string `json:"thumbnail,omitempty"`
+}
+
+func fileToObj(f File) *model.Object {
+	return &model.Object{
+		ID:       f.Fid,
+		Name:     f.FileName,
+		Size:     f.Size,
+		Modified: time.UnixMilli(f.UpdatedAt),
+		IsFolder: !f.File,
+	}
 }
 
 type SortResp struct {

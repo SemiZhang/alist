@@ -1,157 +1,130 @@
-#!/bin/bash
+appName="alist"
+builtAt="$(date +'%F %T %z')"
+goVersion=$(go version | sed 's/go version //')
+gitAuthor=$(git show -s --format='format:%aN <%ae>' HEAD)
+gitCommit=$(git log --pretty=format:"%h" -1)
 
-# 构建前端,在当前目录产生一个dist文件夹
-BUILD_WEB() {
-  git clone https://github.com/alist-org/alist-web.git
-  cd alist-web
-  yarn
-  yarn build
-  sed -i -e "s/\/CDN_URL\//\//g" dist/index.html
-  sed -i -e "s/assets/\/assets/g" dist/index.html
-  rm -f dist/index.html-e
-  mv dist ..
-  cd .. || exit
-  rm -rf alist-web
+if [ "$1" = "dev" ]; then
+  version="dev"
+  webVersion="dev"
+else
+  version=$(git describe --abbrev=0 --tags)
+  webVersion=$(wget -qO- -t1 -T2 "https://api.github.com/repos/alist-org/alist-web/releases/latest" | grep "tag_name" | head -n 1 | awk -F ":" '{print $2}' | sed 's/\"//g;s/,//g;s/ //g')
+fi
+
+echo "build version: $gitTag"
+
+ldflags="\
+-w -s \
+-X 'github.com/alist-org/alist/v3/internal/conf.BuiltAt=$builtAt' \
+-X 'github.com/alist-org/alist/v3/internal/conf.GoVersion=$goVersion' \
+-X 'github.com/alist-org/alist/v3/internal/conf.GitAuthor=$gitAuthor' \
+-X 'github.com/alist-org/alist/v3/internal/conf.GitCommit=$gitCommit' \
+-X 'github.com/alist-org/alist/v3/internal/conf.Version=$version' \
+-X 'github.com/alist-org/alist/v3/internal/conf.WebVersion=$webVersion' \
+"
+
+FetchWebDev() {
+  curl -L https://codeload.github.com/alist-org/web-dist/tar.gz/refs/heads/dev -o web-dist-dev.tar.gz
+  tar -zxvf web-dist-dev.tar.gz
+  rm -rf public/dist
+  mv -f web-dist-dev/dist public
+  rm -rf web-dist-dev web-dist-dev.tar.gz
 }
 
-CDN_WEB() {
+FetchWebRelease() {
   curl -L https://github.com/alist-org/alist-web/releases/latest/download/dist.tar.gz -o dist.tar.gz
   tar -zxvf dist.tar.gz
-  rm -f dist.tar.gz
+  rm -rf public/dist
+  mv -f dist public
+  rm -rf dist.tar.gz
 }
 
-# 在DOCKER中构建
-BUILD_DOCKER() {
-  appName="alist"
-  builtAt="$(date +'%F %T %z')"
-  goVersion=$(go version | sed 's/go version //')
-  gitAuthor=$(git show -s --format='format:%aN <%ae>' HEAD)
-  gitCommit=$(git log --pretty=format:"%h" -1)
-  gitTag=$(git describe --long --tags --dirty --always)
-  webTag=$(wget -qO- -t1 -T2 "https://api.github.com/repos/alist-org/alist-web/releases/latest" | grep "tag_name" | head -n 1 | awk -F ":" '{print $2}' | sed 's/\"//g;s/,//g;s/ //g')
-  ldflags="\
--w -s \
--X 'github.com/Xhofe/alist/conf.BuiltAt=$builtAt' \
--X 'github.com/Xhofe/alist/conf.GoVersion=$goVersion' \
--X 'github.com/Xhofe/alist/conf.GitAuthor=$gitAuthor' \
--X 'github.com/Xhofe/alist/conf.GitCommit=$gitCommit' \
--X 'github.com/Xhofe/alist/conf.GitTag=$gitTag' \
--X 'github.com/Xhofe/alist/conf.WebTag=$webTag' \
-  "
-  go build -o ./bin/alist -ldflags="$ldflags" -tags=jsoniter alist.go
-}
-
-BUILD() {
-  cd alist
-  appName="alist"
-  builtAt="$(date +'%F %T %z')"
-  goVersion=$(go version | sed 's/go version //')
-  gitAuthor=$(git show -s --format='format:%aN <%ae>' HEAD)
-  gitCommit=$(git log --pretty=format:"%h" -1)
-  gitTag=$(git describe --long --tags --dirty --always)
-  webTag=$(wget -qO- -t1 -T2 "https://api.github.com/repos/alist-org/alist-web/releases/latest" | grep "tag_name" | head -n 1 | awk -F ":" '{print $2}' | sed 's/\"//g;s/,//g;s/ //g')
-  echo "build version: $gitTag"
-
-  ldflags="\
--w -s \
--X 'github.com/Xhofe/alist/conf.BuiltAt=$builtAt' \
--X 'github.com/Xhofe/alist/conf.GoVersion=$goVersion' \
--X 'github.com/Xhofe/alist/conf.GitAuthor=$gitAuthor' \
--X 'github.com/Xhofe/alist/conf.GitCommit=$gitCommit' \
--X 'github.com/Xhofe/alist/conf.GitTag=$gitTag' \
--X 'github.com/Xhofe/alist/conf.WebTag=$webTag' \
-"
+BuildDev() {
   rm -rf .git/
-  if [ "$1" == "release" ]; then
-    xgo -out "$appName" -ldflags="$ldflags" -tags=jsoniter .
-  else
-    xgo -targets=linux/amd64,windows/amd64,darwin/amd64 -out "$appName" -ldflags="$ldflags" -tags=jsoniter .
-  fi
-  mkdir -p "build"
-  mv alist-* build
-  if [ "$1" != "release" ]; then
-      cd build
-      upx -9 ./alist-linux*
-      upx -9 ./alist-windows*
-      find . -type f -print0 | xargs -0 md5sum >md5.txt
-      cat md5.txt
-      cd .. || exit
-  fi
-  cd .. || exit
+  xgo -targets=linux/amd64,windows/amd64,darwin/amd64 -out "$appName" -ldflags="$ldflags" -tags=jsoniter .
+  mkdir -p "dist"
+  mv alist-* dist
+  cd dist
+  upx -9 ./alist-linux*
+  upx -9 ./alist-windows*
+  find . -type f -print0 | xargs -0 md5sum >md5.txt
+  cat md5.txt
 }
 
-BUILD_MUSL() {
-  BASE="https://musl.cc/"
+BuildDocker() {
+  go build -o ./bin/alist -ldflags="$ldflags" -tags=jsoniter .
+}
+
+BuildRelease() {
+  rm -rf .git/
+  mkdir -p "build"
+  muslflags="--extldflags '-static -fpic' $ldflags"
+  BASE="https://musl.nn.ci/"
   FILES=(x86_64-linux-musl-cross aarch64-linux-musl-cross arm-linux-musleabihf-cross mips-linux-musl-cross mips64-linux-musl-cross mips64el-linux-musl-cross mipsel-linux-musl-cross powerpc64le-linux-musl-cross s390x-linux-musl-cross)
   for i in "${FILES[@]}"; do
     url="${BASE}${i}.tgz"
     curl -L -o "${i}.tgz" "${url}"
     sudo tar xf "${i}.tgz" --strip-components 1 -C /usr/local
   done
-  cd alist
-  appName="alist"
-  builtAt="$(date +'%F %T %z')"
-  goVersion=$(go version | sed 's/go version //')
-  gitAuthor=$(git show -s --format='format:%aN <%ae>' HEAD)
-  gitCommit=$(git log --pretty=format:"%h" -1)
-  gitTag=$(git describe --long --tags --dirty --always)
-  webTag=$(wget -qO- -t1 -T2 "https://api.github.com/repos/alist-org/alist-web/releases/latest" | grep "tag_name" | head -n 1 | awk -F ":" '{print $2}' | sed 's/\"//g;s/,//g;s/ //g')
-  ldflags="\
--w -s --extldflags '-static -fpic' \
--X 'github.com/Xhofe/alist/conf.BuiltAt=$builtAt' \
--X 'github.com/Xhofe/alist/conf.GoVersion=$goVersion' \
--X 'github.com/Xhofe/alist/conf.GitAuthor=$gitAuthor' \
--X 'github.com/Xhofe/alist/conf.GitCommit=$gitCommit' \
--X 'github.com/Xhofe/alist/conf.GitTag=$gitTag' \
--X 'github.com/Xhofe/alist/conf.WebTag=$webTag' \
-  "
   OS_ARCHES=(linux-musl-amd64 linux-musl-arm64 linux-musl-arm linux-musl-mips linux-musl-mips64 linux-musl-mips64le linux-musl-mipsle linux-musl-ppc64le linux-musl-s390x)
   CGO_ARGS=(x86_64-linux-musl-gcc aarch64-linux-musl-gcc arm-linux-musleabihf-gcc mips-linux-musl-gcc mips64-linux-musl-gcc mips64el-linux-musl-gcc mipsel-linux-musl-gcc powerpc64le-linux-musl-gcc s390x-linux-musl-gcc)
   for i in "${!OS_ARCHES[@]}"; do
-      os_arch=${OS_ARCHES[$i]}
-      cgo_cc=${CGO_ARGS[$i]}
-      echo building for ${os_arch}
-      export GOOS=${os_arch%%-*}
-      export GOARCH=${os_arch##*-}
-      export CC=${cgo_cc}
-      export CGO_ENABLED=1
-      go build -o ./build/$appName-$os_arch -ldflags="$ldflags" -tags=jsoniter alist.go
+    os_arch=${OS_ARCHES[$i]}
+    cgo_cc=${CGO_ARGS[$i]}
+    echo building for ${os_arch}
+    export GOOS=${os_arch%%-*}
+    export GOARCH=${os_arch##*-}
+    export CC=${cgo_cc}
+    export CGO_ENABLED=1
+    go build -o ./build/$appName-$os_arch -ldflags="$muslflags" -tags=jsoniter .
   done
-  cd .. || exit
-}
-
-RELEASE() {
-  cd alist/build
+  xgo -out "$appName" -ldflags="$ldflags" -tags=jsoniter .
+  # why? Because some target platforms seem to have issues with upx compression
   upx -9 ./alist-linux-amd64
   upx -9 ./alist-windows*
-  find . -type f -print0 | xargs -0 md5sum >md5.txt
-  cat md5.txt
-  mkdir compress
-  mv md5.txt compress
-  for i in $(find . -type f -name "$appName-linux-*"); do
-    tar -czvf compress/"$i".tar.gz "$i"
-  done
-  for i in $(find . -type f -name "$appName-darwin-*"); do
-    tar -czvf compress/"$i".tar.gz "$i"
-  done
-  for i in $(find . -type f -name "$appName-windows-*"); do
-    zip compress/$(echo $i | sed 's/\.[^.]*$//').zip "$i"
-  done
-  cd ../.. || exit 
+  mv alist-* build
 }
 
-if [ "$1" = "web" ]; then
-  BUILD_WEB
-elif [ "$1" = "cdn" ]; then
-  CDN_WEB
-elif [ "$1" = "docker" ]; then
-  BUILD_DOCKER
-elif [ "$1" = "build" ]; then
-  BUILD build
+MakeRelease() {
+  cd build
+  mkdir compress
+  for i in $(find . -type f -name "$appName-linux-*"); do
+    cp "$i" alist
+    tar -czvf compress/"$i".tar.gz alist
+    rm -f alist
+  done
+  for i in $(find . -type f -name "$appName-darwin-*"); do
+    cp "$i" alist
+    tar -czvf compress/"$i".tar.gz alist
+    rm -f alist
+  done
+  for i in $(find . -type f -name "$appName-windows-*"); do
+    cp "$i" alist.exe
+    zip compress/$(echo $i | sed 's/\.[^.]*$//').zip alist.exe
+    rm -f alist.exe
+  done
+  cd compress
+  find . -type f -print0 | xargs -0 md5sum >md5.txt
+  cat md5.txt
+  cd ../..
+}
+
+if [ "$1" = "dev" ]; then
+  FetchWebDev
+  if [ "$2" = "docker" ]; then
+    BuildDocker
+  else
+    BuildDev
+  fi
 elif [ "$1" = "release" ]; then
-  BUILD_MUSL
-  BUILD release
-  RELEASE
+  FetchWebRelease
+  if [ "$2" = "docker" ]; then
+    BuildDocker
+  else
+    BuildRelease
+    MakeRelease
+  fi
 else
-  echo -e "${RED_COLOR} Parameter error ${RES}"
+  echo -e "Parameter error"
 fi

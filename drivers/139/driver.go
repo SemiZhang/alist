@@ -1,225 +1,115 @@
-package _39
+package _139
 
 import (
 	"bytes"
+	"context"
 	"fmt"
-	"github.com/Xhofe/alist/conf"
-	"github.com/Xhofe/alist/drivers/base"
-	"github.com/Xhofe/alist/model"
-	"github.com/Xhofe/alist/utils"
-	log "github.com/sirupsen/logrus"
 	"io"
 	"math"
 	"net/http"
-	"path/filepath"
 	"strconv"
+
+	"github.com/alist-org/alist/v3/drivers/base"
+	"github.com/alist-org/alist/v3/internal/driver"
+	"github.com/alist-org/alist/v3/internal/errs"
+	"github.com/alist-org/alist/v3/internal/model"
+	"github.com/alist-org/alist/v3/pkg/utils"
+	log "github.com/sirupsen/logrus"
 )
 
-type Cloud139 struct{}
-
-func (driver Cloud139) Config() base.DriverConfig {
-	return base.DriverConfig{
-		Name:      "139Yun",
-		LocalSort: true,
-	}
+type Yun139 struct {
+	model.Storage
+	Addition
 }
 
-func (driver Cloud139) Items() []base.Item {
-	return []base.Item{
-		{
-			Name:        "username",
-			Label:       "phone",
-			Type:        base.TypeString,
-			Required:    true,
-			Description: "phone number",
-		},
-		{
-			Name:        "access_token",
-			Label:       "Cookie",
-			Type:        base.TypeString,
-			Required:    true,
-			Description: "Unknown expiration time",
-		},
-		{
-			Name:     "internal_type",
-			Label:    "139yun type",
-			Type:     base.TypeSelect,
-			Required: true,
-			Values:   "Personal,Family",
-		},
-		{
-			Name:     "root_folder",
-			Label:    "root folder file_id",
-			Type:     base.TypeString,
-			Required: true,
-		},
-		{
-			Name:     "site_id",
-			Label:    "cloud_id",
-			Type:     base.TypeString,
-			Required: false,
-		},
-	}
+func (d *Yun139) Config() driver.Config {
+	return config
 }
 
-func (driver Cloud139) Save(account *model.Account, old *model.Account) error {
-	if account == nil {
-		return nil
-	}
-	_, err := driver.Request("/orchestration/personalCloud/user/v1.0/qryUserExternInfo", base.Post, nil, nil, nil, base.Json{
-		"qryUserExternInfoReq": base.Json{
-			"commonAccountInfo": base.Json{
-				"account":     account.Username,
-				"accountType": 1,
-			},
-		},
-	}, nil, account)
-	return err
+func (d *Yun139) GetAddition() driver.Additional {
+	return d.Addition
 }
 
-func (driver Cloud139) File(path string, account *model.Account) (*model.File, error) {
-	path = utils.ParsePath(path)
-	if path == "/" {
-		return &model.File{
-			Id:        account.RootFolder,
-			Name:      account.Name,
-			Size:      0,
-			Type:      conf.FOLDER,
-			Driver:    driver.Config().Name,
-			UpdatedAt: account.UpdatedAt,
-		}, nil
-	}
-	dir, name := filepath.Split(path)
-	files, err := driver.Files(dir, account)
-	if err != nil {
-		return nil, err
-	}
-	for _, file := range files {
-		if file.Name == name {
-			return &file, nil
-		}
-	}
-	return nil, base.ErrPathNotFound
-}
-
-func (driver Cloud139) Files(path string, account *model.Account) ([]model.File, error) {
-	path = utils.ParsePath(path)
-	var files []model.File
-	cache, err := base.GetCache(path, account)
-	if err == nil {
-		files, _ = cache.([]model.File)
-	} else {
-		file, err := driver.File(path, account)
-		if err != nil {
-			return nil, err
-		}
-		if isFamily(account) {
-			files, err = driver.familyGetFiles(file.Id, account)
-		} else {
-			files, err = driver.GetFiles(file.Id, account)
-		}
-		if err != nil {
-			return nil, err
-		}
-		if len(files) > 0 {
-			_ = base.SetCache(path, files, account)
-		}
-	}
-	return files, nil
-}
-
-func (driver Cloud139) Link(args base.Args, account *model.Account) (*base.Link, error) {
-	file, err := driver.File(args.Path, account)
-	if err != nil {
-		return nil, err
-	}
-	var u string
-	//if isFamily(account) {
-	//	u, err = driver.familyLink(file.Id, account)
-	//} else {
-	u, err = driver.GetLink(file.Id, account)
-	//}
-	if err != nil {
-		return nil, err
-	}
-	return &base.Link{Url: u}, nil
-}
-
-func (driver Cloud139) Path(path string, account *model.Account) (*model.File, []model.File, error) {
-	path = utils.ParsePath(path)
-	log.Debugf("139 path: %s", path)
-	file, err := driver.File(path, account)
-	if err != nil {
-		return nil, nil, err
-	}
-	if !file.IsDir() {
-		return file, nil, nil
-	}
-	files, err := driver.Files(path, account)
-	if err != nil {
-		return nil, nil, err
-	}
-	return nil, files, nil
-}
-
-//func (driver Cloud139) Proxy(r *http.Request, account *model.Account) {
-//
-//}
-
-func (driver Cloud139) Preview(path string, account *model.Account) (interface{}, error) {
-	return nil, base.ErrNotSupport
-}
-
-func (driver Cloud139) MakeDir(path string, account *model.Account) error {
-	parentFile, err := driver.File(utils.Dir(path), account)
+func (d *Yun139) Init(ctx context.Context, storage model.Storage) error {
+	d.Storage = storage
+	err := utils.Json.UnmarshalFromString(d.Storage.Addition, &d.Addition)
 	if err != nil {
 		return err
 	}
+	_, err = d.post("/orchestration/personalCloud/user/v1.0/qryUserExternInfo", base.Json{
+		"qryUserExternInfoReq": base.Json{
+			"commonAccountInfo": base.Json{
+				"account":     d.Account,
+				"accountType": 1,
+			},
+		},
+	}, nil)
+	return err
+}
+
+func (d *Yun139) Drop(ctx context.Context) error {
+	return nil
+}
+
+func (d *Yun139) List(ctx context.Context, dir model.Obj, args model.ListArgs) ([]model.Obj, error) {
+	if d.isFamily() {
+		return d.familyGetFiles(dir.GetID())
+	} else {
+		return d.getFiles(dir.GetID())
+	}
+}
+
+//func (d *Yun139) Get(ctx context.Context, path string) (model.Obj, error) {
+//	// this is optional
+//	return nil, errs.NotImplement
+//}
+
+func (d *Yun139) Link(ctx context.Context, file model.Obj, args model.LinkArgs) (*model.Link, error) {
+	u, err := d.getLink(file.GetID())
+	if err != nil {
+		return nil, err
+	}
+	return &model.Link{URL: u}, nil
+}
+
+func (d *Yun139) MakeDir(ctx context.Context, parentDir model.Obj, dirName string) error {
 	data := base.Json{
 		"createCatalogExtReq": base.Json{
-			"parentCatalogID": parentFile.Id,
-			"newCatalogName":  utils.Base(path),
+			"parentCatalogID": parentDir.GetID(),
+			"newCatalogName":  dirName,
 			"commonAccountInfo": base.Json{
-				"account":     account.Username,
+				"account":     d.Account,
 				"accountType": 1,
 			},
 		},
 	}
 	pathname := "/orchestration/personalCloud/catalog/v1.0/createCatalogExt"
-	if isFamily(account) {
+	if d.isFamily() {
 		data = base.Json{
-			"cloudID": account.SiteId,
+			"cloudID": d.CloudID,
 			"commonAccountInfo": base.Json{
-				"account":     account.Username,
+				"account":     d.Account,
 				"accountType": 1,
 			},
-			"docLibName": utils.Base(path),
+			"docLibName": dirName,
 		}
 		pathname = "/orchestration/familyCloud/cloudCatalog/v1.0/createCloudDoc"
 	}
-	_, err = driver.Post(pathname,
-		data, nil, account)
+	_, err := d.post(pathname,
+		data, nil)
 	return err
 }
 
-func (driver Cloud139) Move(src string, dst string, account *model.Account) error {
-	if isFamily(account) {
-		return base.ErrNotSupport
-	}
-	srcFile, err := driver.File(src, account)
-	if err != nil {
-		return err
-	}
-	dstParentFile, err := driver.File(utils.Dir(dst), account)
-	if err != nil {
-		return err
+func (d *Yun139) Move(ctx context.Context, srcObj, dstDir model.Obj) error {
+	if d.isFamily() {
+		return errs.NotImplement
 	}
 	var contentInfoList []string
 	var catalogInfoList []string
-	if srcFile.IsDir() {
-		catalogInfoList = append(catalogInfoList, srcFile.Id)
+	if srcObj.IsDir() {
+		catalogInfoList = append(catalogInfoList, srcObj.GetID())
 	} else {
-		contentInfoList = append(contentInfoList, srcFile.Id)
+		contentInfoList = append(contentInfoList, srcObj.GetID())
 	}
 	data := base.Json{
 		"createBatchOprTaskReq": base.Json{
@@ -228,72 +118,60 @@ func (driver Cloud139) Move(src string, dst string, account *model.Account) erro
 			"taskInfo": base.Json{
 				"contentInfoList": contentInfoList,
 				"catalogInfoList": catalogInfoList,
-				"newCatalogID":    dstParentFile.Id,
+				"newCatalogID":    dstDir.GetID(),
 			},
 			"commonAccountInfo": base.Json{
-				"account":     account.Username,
+				"account":     d.Account,
 				"accountType": 1,
 			},
 		},
 	}
 	pathname := "/orchestration/personalCloud/batchOprTask/v1.0/createBatchOprTask"
-	_, err = driver.Post(pathname, data, nil, account)
+	_, err := d.post(pathname, data, nil)
 	return err
 }
 
-func (driver Cloud139) Rename(src string, dst string, account *model.Account) error {
-	if isFamily(account) {
-		return base.ErrNotSupport
-	}
-	srcFile, err := driver.File(src, account)
-	if err != nil {
-		return err
+func (d *Yun139) Rename(ctx context.Context, srcObj model.Obj, newName string) error {
+	if d.isFamily() {
+		return errs.NotImplement
 	}
 	var data base.Json
 	var pathname string
-	if srcFile.IsDir() {
+	if srcObj.IsDir() {
 		data = base.Json{
-			"catalogID":   srcFile.Id,
-			"catalogName": utils.Base(dst),
+			"catalogID":   srcObj.GetID(),
+			"catalogName": newName,
 			"commonAccountInfo": base.Json{
-				"account":     account.Username,
+				"account":     d.Account,
 				"accountType": 1,
 			},
 		}
 		pathname = "/orchestration/personalCloud/catalog/v1.0/updateCatalogInfo"
 	} else {
 		data = base.Json{
-			"contentID":   srcFile.Id,
-			"contentName": utils.Base(dst),
+			"contentID":   srcObj.GetID(),
+			"contentName": newName,
 			"commonAccountInfo": base.Json{
-				"account":     account.Username,
+				"account":     d.Account,
 				"accountType": 1,
 			},
 		}
-		pathname = "/orchestration/personalCloud/catalog/v1.0/updateContentInfo"
+		pathname = "/orchestration/personalCloud/content/v1.0/updateContentInfo"
 	}
-	_, err = driver.Post(pathname, data, nil, account)
+	_, err := d.post(pathname, data, nil)
 	return err
 }
 
-func (driver Cloud139) Copy(src string, dst string, account *model.Account) error {
-	if isFamily(account) {
-		return base.ErrNotSupport
-	}
-	srcFile, err := driver.File(src, account)
-	if err != nil {
-		return err
-	}
-	dstParentFile, err := driver.File(utils.Dir(dst), account)
-	if err != nil {
-		return err
+func (d *Yun139) Copy(ctx context.Context, srcObj, dstDir model.Obj) error {
+	if d.isFamily() {
+		return errs.NotImplement
 	}
 	var contentInfoList []string
 	var catalogInfoList []string
-	if srcFile.IsDir() {
-		catalogInfoList = append(catalogInfoList, srcFile.Id)
+	if srcObj.IsDir() {
+		catalogInfoList = append(catalogInfoList, srcObj.GetID())
 	} else {
-		contentInfoList = append(contentInfoList, srcFile.Id)
+		contentInfoList = append(contentInfoList, srcObj.GetID())
 	}
 	data := base.Json{
 		"createBatchOprTaskReq": base.Json{
@@ -302,30 +180,26 @@ func (driver Cloud139) Copy(src string, dst string, account *model.Account) erro
 			"taskInfo": base.Json{
 				"contentInfoList": contentInfoList,
 				"catalogInfoList": catalogInfoList,
-				"newCatalogID":    dstParentFile.Id,
+				"newCatalogID":    dstDir.GetID(),
 			},
 			"commonAccountInfo": base.Json{
-				"account":     account.Username,
+				"account":     d.Account,
 				"accountType": 1,
 			},
 		},
 	}
 	pathname := "/orchestration/personalCloud/batchOprTask/v1.0/createBatchOprTask"
-	_, err = driver.Post(pathname, data, nil, account)
+	_, err := d.post(pathname, data, nil)
 	return err
 }
 
-func (driver Cloud139) Delete(path string, account *model.Account) error {
-	file, err := driver.File(path, account)
-	if err != nil {
-		return err
-	}
+func (d *Yun139) Remove(ctx context.Context, obj model.Obj) error {
 	var contentInfoList []string
 	var catalogInfoList []string
-	if file.IsDir() {
-		catalogInfoList = append(catalogInfoList, file.Id)
+	if obj.IsDir() {
+		catalogInfoList = append(catalogInfoList, obj.GetID())
 	} else {
-		contentInfoList = append(contentInfoList, file.Id)
+		contentInfoList = append(contentInfoList, obj.GetID())
 	}
 	data := base.Json{
 		"createBatchOprTaskReq": base.Json{
@@ -337,18 +211,18 @@ func (driver Cloud139) Delete(path string, account *model.Account) error {
 				"catalogInfoList": catalogInfoList,
 			},
 			"commonAccountInfo": base.Json{
-				"account":     account.Username,
+				"account":     d.Account,
 				"accountType": 1,
 			},
 		},
 	}
 	pathname := "/orchestration/personalCloud/batchOprTask/v1.0/createBatchOprTask"
-	if isFamily(account) {
+	if d.isFamily() {
 		data = base.Json{
 			"catalogList": catalogInfoList,
 			"contentList": contentInfoList,
 			"commonAccountInfo": base.Json{
-				"account":     account.Username,
+				"account":     d.Account,
 				"accountType": 1,
 			},
 			"sourceCatalogType": 1002,
@@ -356,71 +230,61 @@ func (driver Cloud139) Delete(path string, account *model.Account) error {
 		}
 		pathname = "/orchestration/familyCloud/batchOprTask/v1.0/createBatchOprTask"
 	}
-	_, err = driver.Post(pathname, data, nil, account)
+	_, err := d.post(pathname, data, nil)
 	return err
 }
 
-func (driver Cloud139) Upload(file *model.FileStream, account *model.Account) error {
-	if file == nil {
-		return base.ErrEmptyFile
-	}
-	parentFile, err := driver.File(file.ParentPath, account)
-	if err != nil {
-		return err
-	}
-	if !parentFile.IsDir() {
-		return base.ErrNotFolder
-	}
+func (d *Yun139) Put(ctx context.Context, dstDir model.Obj, stream model.FileStreamer, up driver.UpdateProgress) error {
 	data := base.Json{
 		"manualRename": 2,
 		"operation":    0,
 		"fileCount":    1,
-		"totalSize":    file.Size,
+		"totalSize":    stream.GetSize(),
 		"uploadContentList": []base.Json{{
-			"contentName": file.Name,
-			"contentSize": file.Size,
+			"contentName": stream.GetName(),
+			"contentSize": stream.GetSize(),
 			// "digest": "5a3231986ce7a6b46e408612d385bafa"
 		}},
-		"parentCatalogID": parentFile.Id,
+		"parentCatalogID": dstDir.GetID(),
 		"newCatalogName":  "",
 		"commonAccountInfo": base.Json{
-			"account":     account.Username,
+			"account":     d.Account,
 			"accountType": 1,
 		},
 	}
 	pathname := "/orchestration/personalCloud/uploadAndDownload/v1.0/pcUploadFileRequest"
-	if isFamily(account) {
-		data = newJson(base.Json{
+	if d.isFamily() {
+		data = d.newJson(base.Json{
 			"fileCount":    1,
 			"manualRename": 2,
 			"operation":    0,
 			"path":         "",
 			"seqNo":        "",
-			"totalSize":    file.Size,
+			"totalSize":    stream.GetSize(),
 			"uploadContentList": []base.Json{{
-				"contentName": file.Name,
-				"contentSize": file.Size,
+				"contentName": stream.GetName(),
+				"contentSize": stream.GetSize(),
 				// "digest": "5a3231986ce7a6b46e408612d385bafa"
 			}},
-		}, account)
+		})
 		pathname = "/orchestration/familyCloud/content/v1.0/getFileUploadURL"
-		return base.ErrNotSupport
+		return errs.NotImplement
 	}
 	var resp UploadResp
-	_, err = driver.Post(pathname, data, &resp, account)
+	_, err := d.post(pathname, data, &resp)
 	if err != nil {
 		return err
 	}
-	var Default uint64 = 10485760
-	part := int(math.Ceil(float64(file.Size) / float64(Default)))
-	var start uint64 = 0
+	var Default int64 = 10485760
+	part := int(math.Ceil(float64(stream.GetSize()) / float64(Default)))
+	var start int64 = 0
 	for i := 0; i < part; i++ {
-		byteSize := file.Size - start
+		byteSize := stream.GetSize() - start
 		if byteSize > Default {
 			byteSize = Default
 		}
 		byteData := make([]byte, byteSize)
-		_, err = io.ReadFull(file, byteData)
+		_, err = io.ReadFull(stream, byteData)
 		if err != nil {
 			return err
 		}
@@ -430,10 +294,10 @@ func (driver Cloud139) Upload(file *model.FileStream, account *model.Account) er
 		}
 		headers := map[string]string{
 			"Accept":         "*/*",
-			"Content-Type":   "text/plain;name=" + unicode(file.Name),
-			"contentSize":    strconv.FormatUint(file.Size, 10),
+			"Content-Type":   "text/plain;name=" + unicode(stream.GetName()),
+			"contentSize":    strconv.FormatInt(stream.GetSize(), 10),
 			"range":          fmt.Sprintf("bytes=%d-%d", start, start+byteSize-1),
-			"content-length": strconv.FormatUint(byteSize, 10),
+			"content-length": strconv.FormatInt(byteSize, 10),
 			"uploadtaskID":   resp.Data.UploadResult.UploadTaskID,
 			"rangeType":      "0",
 			"Referer":        "https://yun.139.com/",
@@ -450,8 +314,9 @@ func (driver Cloud139) Upload(file *model.FileStream, account *model.Account) er
 		log.Debugf("%+v", res)
 		res.Body.Close()
 		start += byteSize
+		up(i * 100 / part)
 	}
 	return nil
 }
 
-var _ base.Driver = (*Cloud139)(nil)
+var _ driver.Driver = (*Yun139)(nil)

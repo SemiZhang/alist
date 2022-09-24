@@ -2,11 +2,14 @@ package server
 
 import (
 	"context"
-	"github.com/Xhofe/alist/conf"
-	"github.com/Xhofe/alist/server/webdav"
-	"github.com/Xhofe/alist/utils"
-	"github.com/gin-gonic/gin"
 	"net/http"
+
+	"github.com/alist-org/alist/v3/internal/db"
+	"github.com/alist-org/alist/v3/internal/model"
+	"github.com/alist-org/alist/v3/pkg/utils"
+	"github.com/alist-org/alist/v3/server/webdav"
+	"github.com/gin-gonic/gin"
+	log "github.com/sirupsen/logrus"
 )
 
 var handler *webdav.Handler
@@ -15,11 +18,13 @@ func init() {
 	handler = &webdav.Handler{
 		Prefix:     "/dav",
 		LockSystem: webdav.NewMemLS(),
+		Logger: func(request *http.Request, err error) {
+			log.Errorf("%s %s %+v", request.Method, request.URL.Path, err)
+		},
 	}
 }
 
-func WebDav(r *gin.Engine) {
-	dav := r.Group("/dav")
+func WebDav(dav *gin.RouterGroup) {
 	dav.Use(WebDAVAuth)
 	dav.Any("/*path", ServeWebDAV)
 	dav.Any("", ServeWebDAV)
@@ -34,37 +39,56 @@ func WebDav(r *gin.Engine) {
 }
 
 func ServeWebDAV(c *gin.Context) {
-	fs := webdav.FileSystem{}
-	handler.ServeHTTP(c.Writer, c.Request, &fs)
+	user := c.MustGet("user").(*model.User)
+	ctx := context.WithValue(c.Request.Context(), "user", user)
+	handler.ServeHTTP(c.Writer, c.Request.WithContext(ctx))
 }
 
 func WebDAVAuth(c *gin.Context) {
-	if c.Request.Method == "OPTIONS" {
-		c.Next()
-		return
-	}
+	guest, _ := db.GetGuest()
 	username, password, ok := c.Request.BasicAuth()
 	if !ok {
+		if c.Request.Method == "OPTIONS" {
+			c.Set("user", guest)
+			c.Next()
+			return
+		}
 		c.Writer.Header()["WWW-Authenticate"] = []string{`Basic realm="alist"`}
 		c.Status(http.StatusUnauthorized)
 		c.Abort()
 		return
 	}
-	if conf.GetStr("WebDAV username") == username && conf.GetStr("WebDAV password") == password {
-		c.Next()
-		return
-	}
-	if (conf.GetStr("Visitor WebDAV username") == username &&
-		conf.GetStr("Visitor WebDAV password") == password) ||
-		(conf.GetStr("Visitor WebDAV username") == "" &&
-			conf.GetStr("Visitor WebDAV password") == "") {
-		if !utils.IsContain([]string{"PUT", "DELETE", "PROPPATCH", "MKCOL", "COPY", "MOVE"}, c.Request.Method) {
-			ctx := context.WithValue(c.Request.Context(), "visitor", true)
-			c.Request = c.Request.WithContext(ctx)
+	user, err := db.GetUserByName(username)
+	if err != nil || user.ValidatePassword(password) != nil {
+		if c.Request.Method == "OPTIONS" {
+			c.Set("user", guest)
 			c.Next()
 			return
 		}
+		c.Status(http.StatusUnauthorized)
+		c.Abort()
+		return
 	}
-	c.Status(http.StatusUnauthorized)
-	c.Abort()
+	if !user.CanWebdavRead() {
+		if c.Request.Method == "OPTIONS" {
+			c.Set("user", guest)
+			c.Next()
+			return
+		}
+		c.Status(http.StatusForbidden)
+		c.Abort()
+		return
+	}
+	if !user.CanWebdavManage() && utils.SliceContains([]string{"PUT", "DELETE", "PROPPATCH", "MKCOL", "COPY", "MOVE"}, c.Request.Method) {
+		if c.Request.Method == "OPTIONS" {
+			c.Set("user", guest)
+			c.Next()
+			return
+		}
+		c.Status(http.StatusForbidden)
+		c.Abort()
+		return
+	}
+	c.Set("user", user)
+	c.Next()
 }

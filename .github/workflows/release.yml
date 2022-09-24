@@ -6,7 +6,19 @@ on:
       - '*'
 
 jobs:
+  changelog:
+    name: Create Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+      - run: npx changelogithub # or changelogithub@0.12 if ensure the stable result
+        env:
+          GITHUB_TOKEN: ${{secrets.MY_TOKEN}}
   release:
+    needs: changelog
     strategy:
       matrix:
         platform: [ubuntu-latest]
@@ -22,12 +34,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v2
         with:
-          ref: v2
-          path: alist
-          persist-credentials: false
           fetch-depth: 0
 
-      - name: Install upx
+      - name: Install dependencies
         run: |
           docker pull techknowlogick/xgo:latest
           go install src.techknowlogick.com/xgo@latest
@@ -35,12 +44,9 @@ jobs:
 
       - name: Build
         run: |
-          mv alist/build.sh .
-          bash build.sh cdn
-          mv dist/* alist/public
           bash build.sh release
 
       - name: Release
         uses: softprops/action-gh-release@v1
         with:
-          files: alist/build/compress/*
+          files: build/compress/*

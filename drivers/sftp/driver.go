@@ -1,220 +1,102 @@
-package template
+package sftp
 
 import (
-	"github.com/Xhofe/alist/conf"
-	"github.com/Xhofe/alist/drivers/base"
-	"github.com/Xhofe/alist/model"
-	"github.com/Xhofe/alist/utils"
-	"io"
+	"context"
+	"os"
 	"path"
-	"path/filepath"
+
+	"github.com/alist-org/alist/v3/internal/driver"
+	"github.com/alist-org/alist/v3/internal/errs"
+	"github.com/alist-org/alist/v3/internal/model"
+	"github.com/alist-org/alist/v3/pkg/utils"
+	"github.com/pkg/sftp"
 )
 
 type SFTP struct {
+	model.Storage
+	Addition
+	client *sftp.Client
 }
 
-func (driver SFTP) Config() base.DriverConfig {
-	return base.DriverConfig{
-		Name:      "SFTP",
-		OnlyProxy: true,
-		OnlyLocal: true,
-		LocalSort: true,
-	}
+func (d *SFTP) Config() driver.Config {
+	return config
 }
 
-func (driver SFTP) Items() []base.Item {
-	// TODO fill need info
-	return []base.Item{
-		{
-			Name:     "site_url",
-			Label:    "ip/host",
-			Type:     base.TypeString,
-			Required: true,
-		},
-		{
-			Name:     "limit",
-			Label:    "port",
-			Type:     base.TypeNumber,
-			Required: true,
-			Default:  "22",
-		},
-		{
-			Name:     "username",
-			Label:    "username",
-			Type:     base.TypeString,
-			Required: true,
-		},
-		{
-			Name:     "password",
-			Label:    "password",
-			Type:     base.TypeString,
-			Required: true,
-		},
-		{
-			Name:     "root_folder",
-			Label:    "root folder path",
-			Type:     base.TypeString,
-			Default:  "/",
-			Required: true,
-		},
-	}
+func (d *SFTP) GetAddition() driver.Additional {
+	return d.Addition
 }
 
-func (driver SFTP) Save(account *model.Account, old *model.Account) error {
-	if old != nil {
-		clientsMap.Lock()
-		defer clientsMap.Unlock()
-		delete(clientsMap.clients, old.Name)
-	}
-	if account == nil {
-		return nil
-	}
-	_, err := GetClient(account)
+func (d *SFTP) Init(ctx context.Context, storage model.Storage) error {
+	d.Storage = storage
+	err := utils.Json.UnmarshalFromString(d.Storage.Addition, &d.Addition)
 	if err != nil {
-		account.Status = err.Error()
-	} else {
-		account.Status = "work"
+		return err
 	}
-	_ = model.SaveAccount(account)
-	return err
+	return d.initClient()
 }
 
-func (driver SFTP) File(path string, account *model.Account) (*model.File, error) {
-	path = utils.ParsePath(path)
-	if path == "/" {
-		return &model.File{
-			Id:        account.RootFolder,
-			Name:      account.Name,
-			Size:      0,
-			Type:      conf.FOLDER,
-			Driver:    driver.Config().Name,
-			UpdatedAt: account.UpdatedAt,
-		}, nil
+func (d *SFTP) Drop(ctx context.Context) error {
+	if d.client != nil {
+		_ = d.client.Close()
 	}
-	dir, name := filepath.Split(path)
-	files, err := driver.Files(dir, account)
+	return nil
+}
+
+func (d *SFTP) List(ctx context.Context, dir model.Obj, args model.ListArgs) ([]model.Obj, error) {
+	files, err := d.client.ReadDir(dir.GetPath())
 	if err != nil {
 		return nil, err
 	}
-	for _, file := range files {
-		if file.Name == name {
-			return &file, nil
-		}
-	}
-	return nil, base.ErrPathNotFound
+	return utils.SliceConvert(files, func(src os.FileInfo) (model.Obj, error) {
+		return fileToObj(src), nil
+	})
 }
 
-func (driver SFTP) Files(path string, account *model.Account) ([]model.File, error) {
-	path = utils.ParsePath(path)
-	remotePath := utils.Join(account.RootFolder, path)
-	cache, err := base.GetCache(path, account)
-	if err == nil {
-		files, _ := cache.([]model.File)
-		return files, nil
-	}
-	client, err := GetClient(account)
-	if err != nil {
-		return nil, err
-	}
-	files := make([]model.File, 0)
-	rawFiles, err := client.Files(remotePath)
-	if err != nil {
-		return nil, err
-	}
-	for i := 0; i < len(rawFiles); i++ {
-		files = append(files, driver.formatFile(rawFiles[i]))
-	}
-	if len(files) > 0 {
-		_ = base.SetCache(path, files, account)
-	}
-	return files, nil
-}
+//func (d *SFTP) Get(ctx context.Context, path string) (model.Obj, error) {
+//	// this is optional
+//	return nil, errs.NotImplement
+//}
 
-func (driver SFTP) Link(args base.Args, account *model.Account) (*base.Link, error) {
-	client, err := GetClient(account)
+func (d *SFTP) Link(ctx context.Context, file model.Obj, args model.LinkArgs) (*model.Link, error) {
+	remoteFile, err := d.client.Open(file.GetPath())
 	if err != nil {
 		return nil, err
 	}
-	remoteFileName := utils.Join(account.RootFolder, args.Path)
-	remoteFile, err := client.Open(remoteFileName)
-	if err != nil {
-		return nil, err
-	}
-	return &base.Link{
+	return &model.Link{
 		Data: remoteFile,
 	}, nil
 }
 
-func (driver SFTP) Path(path string, account *model.Account) (*model.File, []model.File, error) {
-	path = utils.ParsePath(path)
-	file, err := driver.File(path, account)
-	if err != nil {
-		return nil, nil, err
-	}
-	if !file.IsDir() {
-		return file, nil, nil
-	}
-	files, err := driver.Files(path, account)
-	if err != nil {
-		return nil, nil, err
-	}
-	return nil, files, nil
+func (d *SFTP) MakeDir(ctx context.Context, parentDir model.Obj, dirName string) error {
+	return d.client.MkdirAll(path.Join(parentDir.GetPath(), dirName))
 }
 
-func (driver SFTP) Preview(path string, account *model.Account) (interface{}, error) {
-	//TODO preview interface if driver support
-	return nil, base.ErrNotImplement
+func (d *SFTP) Move(ctx context.Context, srcObj, dstDir model.Obj) error {
+	return d.client.Rename(srcObj.GetPath(), path.Join(dstDir.GetPath(), srcObj.GetName()))
 }
 
-func (driver SFTP) MakeDir(path string, account *model.Account) error {
-	client, err := GetClient(account)
-	if err != nil {
-		return err
-	}
-	return client.MkdirAll(utils.Join(account.RootFolder, path))
+func (d *SFTP) Rename(ctx context.Context, srcObj model.Obj, newName string) error {
+	return d.client.Rename(srcObj.GetPath(), path.Join(path.Dir(srcObj.GetPath()), newName))
 }
 
-func (driver SFTP) Move(src string, dst string, account *model.Account) error {
-	return driver.Rename(src, dst, account)
+func (d *SFTP) Copy(ctx context.Context, srcObj, dstDir model.Obj) error {
+	return errs.NotSupport
 }
 
-func (driver SFTP) Rename(src string, dst string, account *model.Account) error {
-	client, err := GetClient(account)
-	if err != nil {
-		return err
-	}
-	return client.Rename(utils.Join(account.RootFolder, src), utils.Join(account.RootFolder, dst))
+func (d *SFTP) Remove(ctx context.Context, obj model.Obj) error {
+	return d.remove(obj.GetPath())
 }
 
-func (driver SFTP) Copy(src string, dst string, account *model.Account) error {
-	return base.ErrNotSupport
-}
-
-func (driver SFTP) Delete(path string, account *model.Account) error {
-	client, err := GetClient(account)
-	if err != nil {
-		return err
-	}
-	return client.Remove(utils.Join(account.RootFolder, path))
-}
-
-func (driver SFTP) Upload(file *model.FileStream, account *model.Account) error {
-	if file == nil {
-		return base.ErrEmptyFile
-	}
-	client, err := GetClient(account)
-	if err != nil {
-		return err
-	}
-	dstFile, err := client.Create(path.Join(account.RootFolder, file.ParentPath, file.Name))
+func (d *SFTP) Put(ctx context.Context, dstDir model.Obj, stream model.FileStreamer, up driver.UpdateProgress) error {
+	dstFile, err := d.client.Create(path.Join(dstDir.GetPath(), stream.GetName()))
 	if err != nil {
 		return err
 	}
 	defer func() {
 		_ = dstFile.Close()
 	}()
-	_, err = io.Copy(dstFile, file)
+	err = utils.CopyWithCtx(ctx, dstFile, stream, stream.GetSize(), up)
 	return err
 }
 
-var _ base.Driver = (*SFTP)(nil)
+var _ driver.Driver = (*SFTP)(nil)

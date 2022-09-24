@@ -1,11 +1,7 @@
 package common
 
 import (
-	"errors"
 	"fmt"
-	"github.com/Xhofe/alist/drivers/base"
-	"github.com/Xhofe/alist/model"
-	log "github.com/sirupsen/logrus"
 	"io"
 	"io/ioutil"
 	"net/http"
@@ -13,21 +9,24 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/alist-org/alist/v3/internal/model"
+	"github.com/pkg/errors"
+	log "github.com/sirupsen/logrus"
 )
 
 var HttpClient = &http.Client{}
 
-func Proxy(w http.ResponseWriter, r *http.Request, link *base.Link, file *model.File) error {
-	// 本机读取数据
+func Proxy(w http.ResponseWriter, r *http.Request, link *model.Link, file model.Obj) error {
+	// read data with native
 	var err error
 	if link.Data != nil {
-		//c.Data(http.StatusOK, "application/octet-stream", link.Data)
 		defer func() {
 			_ = link.Data.Close()
 		}()
 		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename=%s`, file.Name))
-		w.Header().Set("Content-Length", strconv.FormatInt(file.Size, 10))
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"; filename*=UTF-8''%s`, file.GetName(), url.QueryEscape(file.GetName())))
+		w.Header().Set("Content-Length", strconv.FormatInt(file.GetSize(), 10))
 		if link.Header != nil {
 			for h, val := range link.Header {
 				w.Header()[h] = val
@@ -44,24 +43,24 @@ func Proxy(w http.ResponseWriter, r *http.Request, link *base.Link, file *model.
 		}
 		return nil
 	}
-	// 本机文件直接返回文件
-	if link.FilePath != "" {
-		f, err := os.Open(link.FilePath)
+	// local file
+	if link.FilePath != nil && *link.FilePath != "" {
+		f, err := os.Open(*link.FilePath)
 		if err != nil {
 			return err
 		}
 		defer func() {
 			_ = f.Close()
 		}()
-		fileStat, err := os.Stat(link.FilePath)
+		fileStat, err := os.Stat(*link.FilePath)
 		if err != nil {
 			return err
 		}
-		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename=%s`, url.QueryEscape(file.Name)))
-		http.ServeContent(w, r, file.Name, fileStat.ModTime(), f)
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"; filename*=UTF-8''%s`, file.GetName(), url.QueryEscape(file.GetName())))
+		http.ServeContent(w, r, file.GetName(), fileStat.ModTime(), f)
 		return nil
 	} else {
-		req, err := http.NewRequest(r.Method, link.Url, nil)
+		req, err := http.NewRequest(r.Method, link.URL, nil)
 		if err != nil {
 			return err
 		}
@@ -71,9 +70,8 @@ func Proxy(w http.ResponseWriter, r *http.Request, link *base.Link, file *model.
 			}
 			req.Header[h] = val
 		}
-		log.Debugf("req headers: %+v", r.Header)
-		for _, header := range link.Headers {
-			req.Header.Set(header.Name, header.Value)
+		for h, val := range link.Header {
+			req.Header[h] = val
 		}
 		res, err := HttpClient.Do(req)
 		if err != nil {

@@ -1,6 +1,6 @@
 name: "Bug report"
 description: Bug report
-labels: [pending triage]
+labels: [bug]
 body:
   - type: markdown
     attributes:
@@ -12,15 +12,24 @@ body:
       label: Please make sure of the following things
       description: You may select more than one, even select all.
       options:
-        - label: I have read the [documentation](https://alist-doc.nn.ci).
+        - label: I have read the [documentation](https://alist.nn.ci).
         - label: I'm sure there are no duplicate issues or discussions.
         - label: I'm sure it's due to `alist` and not something else(such as `Dependencies` or `Operational`).
+        - label: I'm sure I'm using the latest version
   - type: input
     id: version
     attributes:
       label: Alist Version / Alist 版本
       description: What version of our software are you running?
       placeholder: v2.0.0
+    validations:
+      required: true
+  - type: input
+    id: driver
+    attributes:
+      label: Driver used / 使用的存储驱动
+      description: What storage driver are you using?
+      placeholder: "for example: Onedrive"
     validations:
       required: true
   - type: textarea

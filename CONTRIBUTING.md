@@ -14,20 +14,23 @@ Prerequisites:
 Clone `alist` and `alist-web` anywhere:
 
 ```shell
-$ git clone https://github.com/Xhofe/alist.git
-$ git clone https://github.com/Xhofe/alist-web.git
+$ git clone https://github.com/alist-org/alist.git
+$ git clone --recurse-submodules https://github.com/alist-org/alist-web.git
 ```
-You should switch to the dev branch for development.
+You should switch to the `main` branch for development.
 
 ## Preview your change
 ### backend
 ```shell
-$ go run alist.go
+$ go run main.go
 ```
 ### frontend
 ```shell
-$ yarn dev
+$ pnpm dev
 ```
+
+## Add a new driver
+Copy `drivers/template` folder and rename it, and follow the comments in it.
 
 ## Create a commit
 
@@ -73,7 +76,6 @@ Must be one of the following:
 * **chore**: Changes to the build process or auxiliary tools and libraries such as documentation
   generation
 * **release**: Release a new version
-* **workflow**: Workflow related file modification
 
 ### Scope
 The scope could be anything specifying place of the commit change. For example `$location`,
@@ -102,4 +104,4 @@ The rest of the commit message is then used for this.
 ## Submit a pull request
 
 Push your branch to your `alist` fork and open a pull request against the
-`dev` branch.
+`main` branch.

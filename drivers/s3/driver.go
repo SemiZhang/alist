@@ -2,303 +2,151 @@ package s3
 
 import (
 	"bytes"
+	"context"
 	"fmt"
-	"github.com/Xhofe/alist/conf"
-	"github.com/Xhofe/alist/drivers/base"
-	"github.com/Xhofe/alist/model"
-	"github.com/Xhofe/alist/utils"
+	"io"
+	"net/url"
+	stdpath "path"
+	"time"
+
+	"github.com/alist-org/alist/v3/internal/driver"
+	"github.com/alist-org/alist/v3/internal/model"
+	"github.com/alist-org/alist/v3/pkg/utils"
+	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	log "github.com/sirupsen/logrus"
-	"io/ioutil"
-	"net/url"
-	"path/filepath"
-	"time"
 )
 
 type S3 struct {
+	model.Storage
+	Addition
+	Session    *session.Session
+	client     *s3.S3
+	linkClient *s3.S3
 }
 
-func (driver S3) Config() base.DriverConfig {
-	return base.DriverConfig{
-		Name:      "S3",
-		LocalSort: true,
-	}
+func (d *S3) Config() driver.Config {
+	return config
 }
 
-func (driver S3) Items() []base.Item {
-	return []base.Item{
-		{
-			Name:     "bucket",
-			Label:    "Bucket",
-			Type:     base.TypeString,
-			Required: true,
-		},
-		{
-			Name:     "endpoint",
-			Label:    "Endpoint",
-			Type:     base.TypeString,
-			Required: true,
-		},
-		{
-			Name:     "region",
-			Label:    "Region",
-			Type:     base.TypeString,
-			Required: true,
-		},
-		{
-			Name:     "access_key",
-			Label:    "Access Key",
-			Type:     base.TypeString,
-			Required: true,
-		},
-		{
-			Name:     "access_secret",
-			Label:    "Access Secret",
-			Type:     base.TypeString,
-			Required: true,
-		},
-		{
-			Name:     "root_folder",
-			Label:    "root folder path",
-			Type:     base.TypeString,
-			Required: false,
-		},
-		{
-			Name:  "custom_host",
-			Label: "Custom Host",
-			Type:  base.TypeString,
-		},
-		{
-			Name:        "limit",
-			Label:       "Sign url expire time(hours)",
-			Type:        base.TypeNumber,
-			Description: "default 4 hours",
-		},
-		{
-			Name:        "zone",
-			Label:       "placeholder filename",
-			Type:        base.TypeString,
-			Description: "default empty string",
-			Default:     defaultPlaceholderName,
-		},
-		{
-			Name:  "bool_1",
-			Label: "S3ForcePathStyle",
-			Type:  base.TypeBool,
-		},
-		{
-			Name:    "internal_type",
-			Label:   "ListObject Version",
-			Type:    base.TypeSelect,
-			Values:  "v1,v2",
-			Default: "v1",
-		},
-	}
+func (d *S3) GetAddition() driver.Additional {
+	return d.Addition
 }
 
-func (driver S3) Save(account *model.Account, old *model.Account) error {
-	if account == nil {
-		return nil
-	}
-	if account.Limit == 0 {
-		account.Limit = 4
-	}
-	client, err := driver.NewSession(account)
+func (d *S3) Init(ctx context.Context, storage model.Storage) error {
+	d.Storage = storage
+	err := utils.Json.UnmarshalFromString(d.Storage.Addition, &d.Addition)
 	if err != nil {
-		account.Status = err.Error()
-	} else {
-		sessionsMap[account.Name] = client
-		account.Status = "work"
+		return err
 	}
-	_ = model.SaveAccount(account)
-	return err
-}
-
-func (driver S3) File(path string, account *model.Account) (*model.File, error) {
-	path = utils.ParsePath(path)
-	if path == "/" {
-		return &model.File{
-			Id:        account.RootFolder,
-			Name:      account.Name,
-			Size:      0,
-			Type:      conf.FOLDER,
-			Driver:    driver.Config().Name,
-			UpdatedAt: account.UpdatedAt,
-		}, nil
+	if d.Region == "" {
+		d.Region = "alist"
 	}
-	dir, name := filepath.Split(path)
-	files, err := driver.Files(dir, account)
+	err = d.initSession()
 	if err != nil {
-		return nil, err
+		return err
 	}
-	for _, file := range files {
-		if file.Name == name {
-			return &file, nil
-		}
-	}
-	return nil, base.ErrPathNotFound
+	d.client = d.getClient(false)
+	d.linkClient = d.getClient(true)
+	return nil
 }
 
-func (driver S3) Files(path string, account *model.Account) ([]model.File, error) {
-	path = utils.ParsePath(path)
-	var files []model.File
-	cache, err := base.GetCache(path, account)
-	if err == nil {
-		files, _ = cache.([]model.File)
-	} else {
-		if account.InternalType == "v2" {
-			files, err = driver.ListV2(path, account)
-		} else {
-			files, err = driver.List(path, account)
-		}
-		if err == nil && len(files) > 0 {
-			_ = base.SetCache(path, files, account)
-		}
-	}
-	return files, err
+func (d *S3) Drop(ctx context.Context) error {
+	return nil
 }
 
-func (driver S3) Link(args base.Args, account *model.Account) (*base.Link, error) {
-	client, err := driver.GetClient(account, true)
-	if err != nil {
-		return nil, err
+func (d *S3) List(ctx context.Context, dir model.Obj, args model.ListArgs) ([]model.Obj, error) {
+	if d.ListObjectVersion == "v2" {
+		return d.listV2(dir.GetPath())
 	}
-	path := driver.GetKey(args.Path, account, false)
-	disposition := fmt.Sprintf(`attachment;filename="%s"`, url.QueryEscape(utils.Base(path)))
+	return d.listV1(dir.GetPath())
+}
+
+//func (d *S3) Get(ctx context.Context, path string) (model.Obj, error) {
+//	// this is optional
+//	return nil, errs.NotImplement
+//}
+
+func (d *S3) Link(ctx context.Context, file model.Obj, args model.LinkArgs) (*model.Link, error) {
+	path := getKey(file.GetPath(), false)
+	disposition := fmt.Sprintf(`attachment;filename="%s"`, url.QueryEscape(stdpath.Base(path)))
 	input := &s3.GetObjectInput{
-		Bucket: &account.Bucket,
+		Bucket: &d.Bucket,
 		Key:    &path,
 		//ResponseContentDisposition: &disposition,
 	}
-	if account.CustomHost == "" {
+	if d.CustomHost == "" {
 		input.ResponseContentDisposition = &disposition
 	}
-	req, _ := client.GetObjectRequest(input)
+	req, _ := d.linkClient.GetObjectRequest(input)
 	var link string
-	if account.CustomHost != "" {
+	var err error
+	if d.CustomHost != "" {
 		err = req.Build()
 		link = req.HTTPRequest.URL.String()
 	} else {
-		link, err = req.Presign(time.Hour * time.Duration(account.Limit))
+		link, err = req.Presign(time.Hour * time.Duration(d.SignURLExpire))
 	}
 	if err != nil {
 		return nil, err
 	}
-	return &base.Link{
-		Url: link,
+	return &model.Link{
+		URL: link,
 	}, nil
 }
 
-func (driver S3) Path(path string, account *model.Account) (*model.File, []model.File, error) {
-	path = utils.ParsePath(path)
-	log.Debugf("s3 path: %s", path)
-	file, err := driver.File(path, account)
-	if err != nil {
-		return nil, nil, err
-	}
-	if !file.IsDir() {
-		return file, nil, nil
-	}
-	files, err := driver.Files(path, account)
-	if err != nil {
-		return nil, nil, err
-	}
-	return nil, files, nil
+func (d *S3) MakeDir(ctx context.Context, parentDir model.Obj, dirName string) error {
+	return d.Put(ctx, &model.Object{
+		Path: stdpath.Join(parentDir.GetPath(), dirName),
+	}, &model.FileStream{
+		Obj: &model.Object{
+			Name:     getPlaceholderName(d.Placeholder),
+			Modified: time.Now(),
+		},
+		ReadCloser: io.NopCloser(bytes.NewReader([]byte{})),
+		Mimetype:   "application/octet-stream",
+	}, func(int) {})
 }
 
-//func (driver S3) Proxy(r *http.Request, account *model.Account) {
-//
-//}
-
-func (driver S3) Preview(path string, account *model.Account) (interface{}, error) {
-	return nil, base.ErrNotSupport
-}
-
-func (driver S3) MakeDir(path string, account *model.Account) error {
-	// not support, generate a placeholder file
-	_, err := driver.File(path, account)
-	// exist
-	if err != base.ErrPathNotFound {
-		return nil
-	}
-	return driver.Upload(&model.FileStream{
-		File:       ioutil.NopCloser(bytes.NewReader([]byte{})),
-		Size:       0,
-		ParentPath: path,
-		Name:       getPlaceholderName(account.Zone),
-		MIMEType:   "application/octet-stream",
-	}, account)
-}
-
-func (driver S3) Move(src string, dst string, account *model.Account) error {
-	err := driver.Copy(src, dst, account)
+func (d *S3) Move(ctx context.Context, srcObj, dstDir model.Obj) error {
+	err := d.Copy(ctx, srcObj, dstDir)
 	if err != nil {
 		return err
 	}
-	return driver.Delete(src, account)
+	return d.Remove(ctx, srcObj)
 }
 
-func (driver S3) Rename(src string, dst string, account *model.Account) error {
-	return driver.Move(src, dst, account)
-}
-
-func (driver S3) Copy(src string, dst string, account *model.Account) error {
-	client, err := driver.GetClient(account, false)
+func (d *S3) Rename(ctx context.Context, srcObj model.Obj, newName string) error {
+	err := d.copy(ctx, srcObj.GetPath(), stdpath.Join(stdpath.Dir(srcObj.GetPath()), newName), srcObj.IsDir())
 	if err != nil {
 		return err
 	}
-	srcFile, err := driver.File(src, account)
-	if err != nil {
-		return err
-	}
-	srcKey := driver.GetKey(src, account, srcFile.IsDir())
-	dstKey := driver.GetKey(dst, account, srcFile.IsDir())
-	input := &s3.CopyObjectInput{
-		Bucket:     &account.Bucket,
-		CopySource: &srcKey,
-		Key:        &dstKey,
-	}
-	_, err = client.CopyObject(input)
-	return err
+	return d.Remove(ctx, srcObj)
 }
 
-func (driver S3) Delete(path string, account *model.Account) error {
-	client, err := driver.GetClient(account, false)
-	if err != nil {
-		return err
-	}
-	file, err := driver.File(path, account)
-	if err != nil {
-		return err
-	}
-	key := driver.GetKey(path, account, file.IsDir())
-	input := &s3.DeleteObjectInput{
-		Bucket: &account.Bucket,
-		Key:    &key,
-	}
-	_, err = client.DeleteObject(input)
-	return err
+func (d *S3) Copy(ctx context.Context, srcObj, dstDir model.Obj) error {
+	return d.copy(ctx, srcObj.GetPath(), stdpath.Join(dstDir.GetPath(), srcObj.GetName()), srcObj.IsDir())
 }
 
-func (driver S3) Upload(file *model.FileStream, account *model.Account) error {
-	if file == nil {
-		return base.ErrEmptyFile
+func (d *S3) Remove(ctx context.Context, obj model.Obj) error {
+	if obj.IsDir() {
+		return d.removeDir(ctx, obj.GetPath())
 	}
-	s, ok := sessionsMap[account.Name]
-	if !ok {
-		return fmt.Errorf("can't find [%s] session", account.Name)
-	}
-	uploader := s3manager.NewUploader(s)
-	key := driver.GetKey(utils.Join(file.ParentPath, file.GetFileName()), account, false)
+	return d.removeFile(obj.GetPath())
+}
+
+func (d *S3) Put(ctx context.Context, dstDir model.Obj, stream model.FileStreamer, up driver.UpdateProgress) error {
+	uploader := s3manager.NewUploader(d.Session)
+	key := getKey(stdpath.Join(dstDir.GetPath(), stream.GetName()), false)
 	log.Debugln("key:", key)
 	input := &s3manager.UploadInput{
-		Bucket: &account.Bucket,
+		Bucket: &d.Bucket,
 		Key:    &key,
-		Body:   file,
+		Body:   stream,
 	}
 	_, err := uploader.Upload(input)
 	return err
 }
 
-var _ base.Driver = (*S3)(nil)
+var _ driver.Driver = (*S3)(nil)

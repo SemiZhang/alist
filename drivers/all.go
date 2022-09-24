@@ -1,52 +1,34 @@
 package drivers
 
 import (
-	_ "github.com/Xhofe/alist/drivers/123"
-	_ "github.com/Xhofe/alist/drivers/139"
-	_ "github.com/Xhofe/alist/drivers/189"
-	_ "github.com/Xhofe/alist/drivers/189pc"
-	_ "github.com/Xhofe/alist/drivers/alidrive"
-	_ "github.com/Xhofe/alist/drivers/alist"
-	_ "github.com/Xhofe/alist/drivers/baidu"
-	"github.com/Xhofe/alist/drivers/base"
-	_ "github.com/Xhofe/alist/drivers/ftp"
-	_ "github.com/Xhofe/alist/drivers/google"
-	_ "github.com/Xhofe/alist/drivers/lanzou"
-	_ "github.com/Xhofe/alist/drivers/mediatrack"
-	_ "github.com/Xhofe/alist/drivers/native"
-	_ "github.com/Xhofe/alist/drivers/onedrive"
-	_ "github.com/Xhofe/alist/drivers/pikpak"
-	_ "github.com/Xhofe/alist/drivers/quark"
-	_ "github.com/Xhofe/alist/drivers/s3"
-	_ "github.com/Xhofe/alist/drivers/sftp"
-	_ "github.com/Xhofe/alist/drivers/shandian"
-	_ "github.com/Xhofe/alist/drivers/teambition"
-	_ "github.com/Xhofe/alist/drivers/uss"
-	_ "github.com/Xhofe/alist/drivers/webdav"
-	_ "github.com/Xhofe/alist/drivers/xunlei"
-	_ "github.com/Xhofe/alist/drivers/yandex"
-	_ "github.com/Xhofe/alist/drivers/baiduphoto"
-	log "github.com/sirupsen/logrus"
-	"strings"
+	_ "github.com/alist-org/alist/v3/drivers/123"
+	_ "github.com/alist-org/alist/v3/drivers/139"
+	_ "github.com/alist-org/alist/v3/drivers/189"
+	_ "github.com/alist-org/alist/v3/drivers/189pc"
+	_ "github.com/alist-org/alist/v3/drivers/aliyundrive"
+	_ "github.com/alist-org/alist/v3/drivers/aliyundrive_share"
+	_ "github.com/alist-org/alist/v3/drivers/baidu_netdisk"
+	_ "github.com/alist-org/alist/v3/drivers/baidu_photo"
+	_ "github.com/alist-org/alist/v3/drivers/ftp"
+	_ "github.com/alist-org/alist/v3/drivers/google_drive"
+	_ "github.com/alist-org/alist/v3/drivers/lanzou"
+	_ "github.com/alist-org/alist/v3/drivers/local"
+	_ "github.com/alist-org/alist/v3/drivers/mediatrack"
+	_ "github.com/alist-org/alist/v3/drivers/onedrive"
+	_ "github.com/alist-org/alist/v3/drivers/pikpak"
+	_ "github.com/alist-org/alist/v3/drivers/quark"
+	_ "github.com/alist-org/alist/v3/drivers/s3"
+	_ "github.com/alist-org/alist/v3/drivers/sftp"
+	_ "github.com/alist-org/alist/v3/drivers/teambition"
+	_ "github.com/alist-org/alist/v3/drivers/thunder"
+	_ "github.com/alist-org/alist/v3/drivers/uss"
+	_ "github.com/alist-org/alist/v3/drivers/virtual"
+	_ "github.com/alist-org/alist/v3/drivers/webdav"
+	_ "github.com/alist-org/alist/v3/drivers/yandex_disk"
 )
 
-var NoCors string
-var NoUpload string
+// All do nothing,just for import
+// same as _ import
+func All() {
 
-func GetConfig() {
-	for k, v := range base.GetDriversMap() {
-		if v.Config().NoCors {
-			NoCors += k + ","
-		}
-		if v.Upload(nil, nil) != base.ErrEmptyFile {
-			NoUpload += k + ","
-		}
-	}
-	NoCors = strings.Trim(NoCors, ",")
-	NoUpload += "root"
-}
-
-func init() {
-	log.Debug("all init")
-	GetConfig()
 }

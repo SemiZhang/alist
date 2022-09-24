@@ -20,15 +20,8 @@ jobs:
         with:
           go-version: ${{ matrix.go-version }}
 
-      - name: Set up Node
-        uses: actions/setup-node@v2
-        with:
-          node-version: '16'
-
       - name: Checkout
-        uses: actions/checkout@v2
-        with:
-          path: alist
+        uses: actions/checkout@v3
 
       - name: Install dependencies
         run: |
@@ -38,13 +31,10 @@ jobs:
 
       - name: Build
         run: |
-          mv alist/build.sh .
-          bash build.sh web
-          mv dist/* alist/public
-          bash build.sh build
+          bash build.sh dev
 
       - name: Upload artifact
         uses: actions/upload-artifact@v2
         with:
-          name: artifact
-          path: alist/build
+          name: alist
+          path: dist

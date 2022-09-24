@@ -1,17 +1,17 @@
-package _89
+package _189
 
-import (
-	"github.com/Xhofe/alist/conf"
-	"github.com/Xhofe/alist/utils"
-	"path"
-)
+type LoginResp struct {
+	Msg    string `json:"msg"`
+	Result int    `json:"result"`
+	ToUrl  string `json:"toUrl"`
+}
 
-type Cloud189Error struct {
+type Error struct {
 	ErrorCode string `json:"errorCode"`
 	ErrorMsg  string `json:"errorMsg"`
 }
 
-type Cloud189File struct {
+type File struct {
 	Id         int64  `json:"id"`
 	LastOpTime string `json:"lastOpTime"`
 	Name       string `json:"name"`
@@ -23,37 +23,19 @@ type Cloud189File struct {
 	Url string `json:"url"`
 }
 
-func (f Cloud189File) GetSize() uint64 {
-	if f.Size == -1 {
-		return 0
-	}
-	return uint64(f.Size)
-}
-
-func (f Cloud189File) GetName() string {
-	return f.Name
-}
-
-func (f Cloud189File) GetType() int {
-	if f.Size == -1 {
-		return conf.FOLDER
-	}
-	return utils.GetFileType(path.Ext(f.Name))
-}
-
-type Cloud189Folder struct {
+type Folder struct {
 	Id         int64  `json:"id"`
 	LastOpTime string `json:"lastOpTime"`
 	Name       string `json:"name"`
 }
 
-type Cloud189Files struct {
+type Files struct {
 	ResCode    int    `json:"res_code"`
 	ResMessage string `json:"res_message"`
 	FileListAO struct {
-		Count      int              `json:"count"`
-		FileList   []Cloud189File   `json:"fileList"`
-		FolderList []Cloud189Folder `json:"folderList"`
+		Count      int      `json:"count"`
+		FileList   []File   `json:"fileList"`
+		FolderList []Folder `json:"folderList"`
 	} `json:"fileListAO"`
 }
 
@@ -67,18 +49,13 @@ type Part struct {
 	RequestHeader string `json:"requestHeader"`
 }
 
-//type Info struct {
-//	SessionKey string
-//	Rsa        Rsa
-//}
-
 type Rsa struct {
 	Expire int64  `json:"expire"`
 	PkId   string `json:"pkId"`
 	PubKey string `json:"pubKey"`
 }
 
-type Cloud189Down struct {
+type Down struct {
 	ResCode         int    `json:"res_code"`
 	ResMessage      string `json:"res_message"`
 	FileDownloadUrl string `json:"fileDownloadUrl"`

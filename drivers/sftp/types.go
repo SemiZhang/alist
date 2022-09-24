@@ -1,18 +1,16 @@
-package template
+package sftp
 
-import "time"
+import (
+	"os"
 
-// write all struct here
+	"github.com/alist-org/alist/v3/internal/model"
+)
 
-type Resp struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-}
-
-type File struct {
-	Id        string     `json:"id"`
-	FileName  string     `json:"file_name"`
-	Size      int64      `json:"size"`
-	File      bool       `json:"file"`
-	UpdatedAt *time.Time `json:"updated_at"`
+func fileToObj(f os.FileInfo) model.Obj {
+	return &model.Object{
+		Name:     f.Name(),
+		Size:     f.Size(),
+		Modified: f.ModTime(),
+		IsFolder: f.IsDir(),
+	}
 }

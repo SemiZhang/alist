@@ -1,202 +1,171 @@
 package lanzou
 
 import (
-	"github.com/Xhofe/alist/conf"
-	"github.com/Xhofe/alist/drivers/base"
-	"github.com/Xhofe/alist/model"
-	"github.com/Xhofe/alist/utils"
-	log "github.com/sirupsen/logrus"
-	"path/filepath"
+	"context"
+	"net/http"
+	"time"
+
+	"github.com/alist-org/alist/v3/drivers/base"
+	"github.com/alist-org/alist/v3/internal/driver"
+	"github.com/alist-org/alist/v3/internal/errs"
+	"github.com/alist-org/alist/v3/internal/model"
+	"github.com/alist-org/alist/v3/pkg/utils"
+	"github.com/go-resty/resty/v2"
 )
 
-type Lanzou struct{}
+var upClient = base.NewRestyClient().SetTimeout(120 * time.Second)
 
-func (driver Lanzou) Config() base.DriverConfig {
-	return base.DriverConfig{
-		Name:   "Lanzou",
-		NoCors: true,
-	}
+type LanZou struct {
+	Addition
+	model.Storage
 }
 
-func (driver Lanzou) Items() []base.Item {
-	return []base.Item{
-		{
-			Name:     "internal_type",
-			Label:    "lanzou type",
-			Type:     base.TypeSelect,
-			Required: true,
-			Values:   "cookie,url",
-		},
-		{
-			Name:        "access_token",
-			Label:       "cookie",
-			Type:        base.TypeString,
-			Description: "about 15 days valid",
-			Required:    true,
-		},
-		{
-			Name:     "site_url",
-			Label:    "share url",
-			Type:     base.TypeString,
-			Required: true,
-		},
-		{
-			Name:  "root_folder",
-			Label: "root folder file_id",
-			Type:  base.TypeString,
-		},
-		{
-			Name:  "password",
-			Label: "share password",
-			Type:  base.TypeString,
-		},
-	}
+func (d *LanZou) Config() driver.Config {
+	return config
 }
 
-func (driver Lanzou) Save(account *model.Account, old *model.Account) error {
-	if account == nil {
-		return nil
+func (d *LanZou) GetAddition() driver.Additional {
+	return d.Addition
+}
+
+func (d *LanZou) Init(ctx context.Context, storage model.Storage) error {
+	d.Storage = storage
+	err := utils.Json.UnmarshalFromString(d.Storage.Addition, &d.Addition)
+	if err != nil {
+		return err
 	}
-	if account.InternalType == "cookie" {
-		if account.RootFolder == "" {
-			account.RootFolder = "-1"
+	if d.IsCookie() {
+		if d.RootFolderID == "" {
+			d.RootFolderID = "-1"
 		}
 	}
-	account.Status = "work"
-	_ = model.SaveAccount(account)
 	return nil
 }
 
-func (driver Lanzou) File(path string, account *model.Account) (*model.File, error) {
-	path = utils.ParsePath(path)
-	if path == "/" {
-		return &model.File{
-			Id:        account.RootFolder,
-			Name:      account.Name,
-			Size:      0,
-			Type:      conf.FOLDER,
-			Driver:    driver.Config().Name,
-			UpdatedAt: account.UpdatedAt,
-		}, nil
-	}
-	dir, name := filepath.Split(path)
-	files, err := driver.Files(dir, account)
-	if err != nil {
-		return nil, err
-	}
-	for _, file := range files {
-		if file.Name == name {
-			return &file, nil
-		}
-	}
-	return nil, base.ErrPathNotFound
+func (d *LanZou) Drop(ctx context.Context) error {
+	return nil
 }
 
-func (driver Lanzou) Files(path string, account *model.Account) ([]model.File, error) {
-	path = utils.ParsePath(path)
-	var rawFiles []LanZouFile
-	cache, err := base.GetCache(path, account)
-	if err == nil {
-		rawFiles, _ = cache.([]LanZouFile)
+// 获取的大小和时间不准确
+func (d *LanZou) List(ctx context.Context, dir model.Obj, args model.ListArgs) ([]model.Obj, error) {
+	if d.IsCookie() {
+		return d.GetFiles(ctx, dir.GetID())
 	} else {
-		file, err := driver.File(path, account)
-		if err != nil {
-			return nil, err
-		}
-		rawFiles, err = driver.GetFiles(file.Id, account)
-		if err != nil {
-			return nil, err
-		}
-		if len(rawFiles) > 0 {
-			_ = base.SetCache(path, rawFiles, account)
-		}
+		return d.GetFileOrFolderByShareUrl(ctx, dir.GetID(), d.SharePassword)
 	}
-	files := make([]model.File, 0)
-	for _, file := range rawFiles {
-		files = append(files, *driver.FormatFile(&file))
-	}
-	return files, nil
 }
 
-func (driver Lanzou) Link(args base.Args, account *model.Account) (*base.Link, error) {
-	file, err := driver.File(args.Path, account)
-	if err != nil {
-		return nil, err
-	}
-	log.Debugf("down file: %+v", file)
-	downId := file.Id
-	pwd := ""
-	if account.InternalType == "cookie" {
-		downId, pwd, err = driver.GetDownPageId(file.Id, account)
+func (d *LanZou) Link(ctx context.Context, file model.Obj, args model.LinkArgs) (*model.Link, error) {
+	downID := file.GetID()
+	pwd := d.SharePassword
+	if d.IsCookie() {
+		share, err := d.getFileShareUrlByID(ctx, file.GetID())
 		if err != nil {
 			return nil, err
 		}
+		downID = share.FID
+		pwd = share.Pwd
 	}
-	var url string
-	//if pwd != "" {
-	//url, err = driver.GetLinkWithPassword(downId, pwd, account)
-	//} else {
-	url, err = driver.GetLink(downId, pwd, account)
-	//}
+	fileInfo, err := d.getFilesByShareUrl(ctx, downID, pwd, nil)
 	if err != nil {
 		return nil, err
 	}
-	link := base.Link{
-		Url: url,
-		Headers: []base.Header{
-			{Name: "User-Agent", Value: base.UserAgent},
+
+	return &model.Link{
+		URL: fileInfo.Url,
+		Header: http.Header{
+			"User-Agent": []string{base.UserAgent},
 		},
+	}, nil
+}
+
+func (d *LanZou) MakeDir(ctx context.Context, parentDir model.Obj, dirName string) error {
+	if d.IsCookie() {
+		_, err := d.post(d.BaseUrl+"/doupload.php", func(req *resty.Request) {
+			req.SetContext(ctx)
+			req.SetFormData(map[string]string{
+				"task":               "2",
+				"parent_id":          parentDir.GetID(),
+				"folder_name":        dirName,
+				"folder_description": "",
+			})
+		}, nil)
+		return err
 	}
-	return &link, nil
+	return errs.NotImplement
 }
 
-func (driver Lanzou) Path(path string, account *model.Account) (*model.File, []model.File, error) {
-	path = utils.ParsePath(path)
-	log.Debugf("lanzou path: %s", path)
-	file, err := driver.File(path, account)
-	if err != nil {
-		return nil, nil, err
+func (d *LanZou) Move(ctx context.Context, srcObj, dstDir model.Obj) error {
+	if d.IsCookie() {
+		if !srcObj.IsDir() {
+			_, err := d.post(d.BaseUrl+"/doupload.php", func(req *resty.Request) {
+				req.SetContext(ctx)
+				req.SetFormData(map[string]string{
+					"task":      "20",
+					"folder_id": dstDir.GetID(),
+					"file_id":   srcObj.GetID(),
+				})
+			}, nil)
+			return err
+		}
 	}
-	if !file.IsDir() {
-		return file, nil, nil
+	return errs.NotImplement
+}
+
+func (d *LanZou) Rename(ctx context.Context, srcObj model.Obj, newName string) error {
+	if d.IsCookie() {
+		if !srcObj.IsDir() {
+			_, err := d.post(d.BaseUrl+"/doupload.php", func(req *resty.Request) {
+				req.SetContext(ctx)
+				req.SetFormData(map[string]string{
+					"task":      "46",
+					"file_id":   srcObj.GetID(),
+					"file_name": newName,
+					"type":      "2",
+				})
+			}, nil)
+			return err
+		}
 	}
-	files, err := driver.Files(path, account)
-	if err != nil {
-		return nil, nil, err
+	return errs.NotImplement
+}
+
+func (d *LanZou) Copy(ctx context.Context, srcObj, dstDir model.Obj) error {
+	return errs.NotImplement
+}
+
+func (d *LanZou) Remove(ctx context.Context, obj model.Obj) error {
+	if d.IsCookie() {
+		_, err := d.post(d.BaseUrl+"/doupload.php", func(req *resty.Request) {
+			req.SetContext(ctx)
+			if obj.IsDir() {
+				req.SetFormData(map[string]string{
+					"task":      "3",
+					"folder_id": obj.GetID(),
+				})
+			} else {
+				req.SetFormData(map[string]string{
+					"task":    "6",
+					"file_id": obj.GetID(),
+				})
+			}
+		}, nil)
+		return err
 	}
-	return nil, files, nil
+	return errs.NotImplement
 }
 
-//func (driver Lanzou) Proxy(r *http.Request, account *model.Account) {
-//	r.Header.Del("Origin")
-//}
-
-func (driver Lanzou) Preview(path string, account *model.Account) (interface{}, error) {
-	return nil, base.ErrNotSupport
+func (d *LanZou) Put(ctx context.Context, dstDir model.Obj, stream model.FileStreamer, up driver.UpdateProgress) error {
+	if d.IsCookie() {
+		_, err := d._post(d.BaseUrl+"/fileup.php", func(req *resty.Request) {
+			req.SetFormData(map[string]string{
+				"task":      "1",
+				"id":        "WU_FILE_0",
+				"name":      stream.GetName(),
+				"folder_id": dstDir.GetID(),
+			}).SetFileReader("upload_file", stream.GetName(), stream)
+		}, nil, true)
+		return err
+	}
+	return errs.NotImplement
 }
-
-func (driver *Lanzou) MakeDir(path string, account *model.Account) error {
-	return base.ErrNotImplement
-}
-
-func (driver *Lanzou) Move(src string, dst string, account *model.Account) error {
-	return base.ErrNotImplement
-}
-
-func (driver *Lanzou) Rename(src string, dst string, account *model.Account) error {
-	return base.ErrNotImplement
-}
-
-func (driver *Lanzou) Copy(src string, dst string, account *model.Account) error {
-	return base.ErrNotImplement
-}
-
-func (driver *Lanzou) Delete(path string, account *model.Account) error {
-	return base.ErrNotImplement
-}
-
-func (driver *Lanzou) Upload(file *model.FileStream, account *model.Account) error {
-	return base.ErrNotImplement
-}
-
-var _ base.Driver = (*Lanzou)(nil)
