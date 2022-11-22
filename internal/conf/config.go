@@ -1,6 +1,9 @@
 package conf
 
 import (
+	"path/filepath"
+
+	"github.com/alist-org/alist/v3/cmd/flags"
 	"github.com/alist-org/alist/v3/pkg/utils/random"
 )
 
@@ -23,7 +26,7 @@ type Scheme struct {
 }
 
 type LogConfig struct {
-	Enable     bool   `json:"enable" env:"log_enable"`
+	Enable     bool   `json:"enable" env:"LOG_ENABLE"`
 	Name       string `json:"name" env:"LOG_NAME"`
 	MaxSize    int    `json:"max_size" env:"MAX_SIZE"`
 	MaxBackups int    `json:"max_backups" env:"MAX_BACKUPS"`
@@ -32,35 +35,38 @@ type LogConfig struct {
 }
 
 type Config struct {
-	Force     bool   `json:"force"`
-	Address   string `json:"address" env:"ADDR"`
-	Port      int    `json:"port" env:"PORT"`
-	JwtSecret string `json:"jwt_secret" env:"JWT_SECRET"`
-	// CaCheExpiration int       `json:"cache_expiration" env:"CACHE_EXPIRATION"`
-	Cdn      string    `json:"cdn" env:"CDN"`
-	Database Database  `json:"database"`
-	Scheme   Scheme    `json:"scheme"`
-	TempDir  string    `json:"temp_dir" env:"TEMP_DIR"`
-	Log      LogConfig `json:"log"`
+	Force          bool      `json:"force" env:"FORCE"`
+	Address        string    `json:"address" env:"ADDR"`
+	Port           int       `json:"port" env:"PORT"`
+	SiteURL        string    `json:"site_url" env:"SITE_URL"`
+	Cdn            string    `json:"cdn" env:"CDN"`
+	JwtSecret      string    `json:"jwt_secret" env:"JWT_SECRET"`
+	TokenExpiresIn int       `json:"token_expires_in" env:"TOKEN_EXPIRES_IN"`
+	Database       Database  `json:"database"`
+	Scheme         Scheme    `json:"scheme"`
+	TempDir        string    `json:"temp_dir" env:"TEMP_DIR"`
+	Log            LogConfig `json:"log"`
 }
 
 func DefaultConfig() *Config {
+	tempDir := filepath.Join(flags.DataDir, "temp")
+	logPath := filepath.Join(flags.DataDir, "log/log.log")
+	dbPath := filepath.Join(flags.DataDir, "data.db")
 	return &Config{
-		Address:   "0.0.0.0",
-		Port:      5244,
-		JwtSecret: random.String(16),
-		Cdn:       "",
-		TempDir:   "data/temp",
+		Address:        "0.0.0.0",
+		Port:           5244,
+		JwtSecret:      random.String(16),
+		TokenExpiresIn: 48,
+		TempDir:        tempDir,
 		Database: Database{
 			Type:        "sqlite3",
 			Port:        0,
 			TablePrefix: "x_",
-			DBFile:      "data/data.db",
+			DBFile:      dbPath,
 		},
-		// CaCheExpiration: 30,
 		Log: LogConfig{
 			Enable:     true,
-			Name:       "log/log.log",
+			Name:       logPath,
 			MaxSize:    10,
 			MaxBackups: 5,
 			MaxAge:     28,

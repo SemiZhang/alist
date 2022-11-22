@@ -1,14 +1,12 @@
 <div align="center">
   <a href="https://alist.nn.ci"><img height="100px" alt="logo" src="https://cdn.jsdelivr.net/gh/alist-org/logo@main/logo.svg"/></a>
   <p><em>🗂️A file list program that supports multiple storage, powered by Gin and Solidjs.</em></p>
+<div>
   <a href="https://goreportcard.com/report/github.com/alist-org/alist/v3">
     <img src="https://goreportcard.com/badge/github.com/alist-org/alist/v3" alt="latest version" />
   </a>
   <a href="https://github.com/Xhofe/alist/blob/main/LICENSE">
     <img src="https://img.shields.io/github/license/Xhofe/alist" alt="License" />
-  </a>
-  <a href="https://github.com/Xhofe/alist/discussions">
-    <img src="https://img.shields.io/github/discussions/Xhofe/alist?color=%23ED8936" alt="discussions" />
   </a>
   <a href="https://github.com/Xhofe/alist/actions?query=workflow%3ABuild">
     <img src="https://img.shields.io/github/workflow/status/Xhofe/alist/build" alt="Build status" />
@@ -16,20 +14,32 @@
   <a href="https://github.com/Xhofe/alist/releases">
     <img src="https://img.shields.io/github/release/Xhofe/alist" alt="latest version" />
   </a>
-  <a href="https://github.com/Xhofe/alist/releases">
-    <img src="https://img.shields.io/github/downloads/Xhofe/alist/total?color=%239F7AEA" alt="Downloads" />
-  </a>
   <a title="Crowdin" target="_blank" href="https://crwd.in/alist">
     <img src="https://badges.crowdin.net/alist/localized.svg">
   </a>
-  <a href="https://pay.xhofe.top">
-    <img src="https://img.shields.io/badge/%24-sponsor-ff69b4.svg" alt="sponsor" />
+</div>
+<div>
+  <a href="https://github.com/Xhofe/alist/discussions">
+    <img src="https://img.shields.io/github/discussions/Xhofe/alist?color=%23ED8936" alt="discussions" />
   </a>
+  <a href="https://discord.gg/F4ymsH4xv2">
+    <img src="https://img.shields.io/discord/1018870125102895134?logo=discord" alt="discussions" />
+  </a>
+  <a href="https://github.com/Xhofe/alist/releases">
+    <img src="https://img.shields.io/github/downloads/Xhofe/alist/total?color=%239F7AEA&logo=github" alt="Downloads" />
+  </a>
+  <a href="https://hub.docker.com/r/xhofe/alist">
+    <img src="https://img.shields.io/docker/pulls/xhofe/alist?color=%2348BB78&logo=docker&label=pulls" alt="Downloads" />
+  </a>
+  <a href="https://alist.nn.ci/guide/sponsor.html">
+    <img src="https://img.shields.io/badge/%24-sponsor-F87171.svg" alt="sponsor" />
+  </a>
+</div>
 </div>
 
 ---
 
-English | [中文](./README_cn.md) | [Contributors](./CONTRIBUTORS.md) | [Contributing](./CONTRIBUTING.md) | [CODE_OF_CONDUCT](./CODE_OF_CONDUCT.md)
+English | [中文](./README_cn.md) | [Contributing](./CONTRIBUTING.md) | [CODE_OF_CONDUCT](./CODE_OF_CONDUCT.md)
 
 ## Features
 
@@ -52,6 +62,13 @@ English | [中文](./README_cn.md) | [Contributors](./CONTRIBUTORS.md) | [Contri
     - [x] [BaiduNetdisk](http://pan.baidu.com/)
     - [x] [Quark](https://pan.quark.cn)
     - [x] [Thunder](https://pan.xunlei.com)
+    - [x] [Lanzou](https://www.lanzou.com/)
+    - [x] [Aliyundrive share](https://www.aliyundrive.com/)
+    - [x] [Google photo](https://photos.google.com/)
+    - [x] [Mega.nz](https://mega.nz)
+    - [x] [Baidu photo](https://photo.baidu.com/)
+    - [x] SMB
+    - [x] [115](https://115.com/)
 - [x] Easy to deploy and out-of-the-box
 - [x] File preview (PDF, markdown, code, plain text, ...)
 - [x] Image preview in gallery mode
@@ -76,16 +93,28 @@ English | [中文](./README_cn.md) | [Contributors](./CONTRIBUTORS.md) | [Contri
 
 ## Demo
 
-<https://pan.nn.ci>
+<https://al.nn.ci>
 
 ## Discussion
 
 Please go to our [discussion forum](https://github.com/Xhofe/alist/discussions) for general questions, **issues are for bug reports and feature request only.**
 
-## Special sponsors
+## Sponsor
+
+AList is an open-source software, if you happen to like this project and want me to keep going, please consider sponsoring me or providing a single donation! Thanks for all the love and support:
+https://alist.nn.ci/guide/sponsor.html
+
+### Special sponsors
+
 - [找资源 - 阿里云盘资源搜索引擎](https://zhaoziyuan.la/)
-- [KinhDown 百度云盘不限速下载！永久免费！已稳定运行3年！非常可靠!](https://kinhdown.com/?Type=Tutorials)
+- [KinhDown 百度云盘不限速下载！永久免费！已稳定运行3年！非常可靠！Q群 -> 786799372](https://kinhdown.com)
 - [JetBrains: Essential tools for software developers and teams](https://www.jetbrains.com/)
+
+## Contributors
+
+Thanks goes to these wonderful people:
+
+[![Contributors](http://contributors.nn.ci/api?repo=alist-org/alist&repo=alist-org/alist-web&repo=alist-org/docs)](https://github.com/alist-org/alist/graphs/contributors)
 
 ## License
 
@@ -100,4 +129,4 @@ The `AList` is open-source software licensed under the AGPL-3.0 license.
 
 ---
 
-> [@Blog](https://nn.ci/) · [@GitHub](https://github.com/Xhofe) · [@TelegramGroup](https://t.me/alist_chat) · [@QQGroup](https://jq.qq.com/?_wv=1027&k=YJJj2Gwb)
+> [@Blog](https://nn.ci/) · [@GitHub](https://github.com/Xhofe) · [@TelegramGroup](https://t.me/alist_chat) · [@Discord](https://discord.gg/F4ymsH4xv2)

@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/alist-org/alist/v3/drivers/base"
+	"github.com/alist-org/alist/v3/pkg/utils"
 	"github.com/go-resty/resty/v2"
 	jsoniter "github.com/json-iterator/go"
 )
@@ -13,19 +14,29 @@ import (
 // do others that not defined in Driver interface
 
 func (d *Pan123) login() error {
-	url := "https://www.123pan.com/api/user/sign_in"
-	var resp TokenResp
-	_, err := base.RestyClient.R().
-		SetResult(&resp).
-		SetBody(base.Json{
+	var body base.Json
+	url := "https://www.123pan.com/a/api/user/sign_in"
+	if utils.IsEmailFormat(d.Username) {
+		body = base.Json{
+			"mail":     d.Username,
+			"password": d.Password,
+			"type":     2,
+		}
+	} else {
+		body = base.Json{
 			"passport": d.Username,
 			"password": d.Password,
-		}).Post(url)
+		}
+	}
+	var resp TokenResp
+	res, err := base.RestyClient.R().
+		SetResult(&resp).
+		SetBody(body).Post(url)
 	if err != nil {
 		return err
 	}
-	if resp.Code != 200 {
-		err = fmt.Errorf(resp.Message)
+	if utils.Json.Get(res.Body(), "code").ToInt() != 200 {
+		err = fmt.Errorf(utils.Json.Get(res.Body(), "message").ToString())
 	} else {
 		d.AccessToken = resp.Data.Token
 	}
@@ -34,7 +45,12 @@ func (d *Pan123) login() error {
 
 func (d *Pan123) request(url string, method string, callback base.ReqCallback, resp interface{}) ([]byte, error) {
 	req := base.RestyClient.R()
-	req.SetHeader("Authorization", "Bearer "+d.AccessToken)
+	req.SetHeaders(map[string]string{
+		"origin":        "https://www.123pan.com",
+		"authorization": "Bearer " + d.AccessToken,
+		"platform":      "web",
+		"app-version":   "1.2",
+	})
 	if callback != nil {
 		callback(req)
 	}
@@ -46,7 +62,7 @@ func (d *Pan123) request(url string, method string, callback base.ReqCallback, r
 		return nil, err
 	}
 	body := res.Body()
-	code := jsoniter.Get(body, "code").ToInt()
+	code := utils.Json.Get(body, "code").ToInt()
 	if code != 0 {
 		if code == 401 {
 			err := d.login()

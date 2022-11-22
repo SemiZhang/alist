@@ -231,7 +231,8 @@ func (h *Handler) handleGetHeadPost(w http.ResponseWriter, r *http.Request) (sta
 		u := fmt.Sprintf("%s/p%s?sign=%s",
 			common.GetApiUrl(r),
 			utils.EncodePath(reqPath, true),
-			sign.Sign(path.Base(reqPath)))
+			sign.Sign(reqPath))
+		w.Header().Set("Cache-Control", "max-age=0, no-cache, no-store, must-revalidate")
 		http.Redirect(w, r, u, 302)
 	} else {
 		link, _, err := fs.Link(ctx, reqPath, model.LinkArgs{IP: utils.ClientIP(r)})
@@ -299,6 +300,9 @@ func (h *Handler) handlePut(w http.ResponseWriter, r *http.Request) (status int,
 		Obj:        &obj,
 		ReadCloser: r.Body,
 		Mimetype:   r.Header.Get("Content-Type"),
+	}
+	if stream.Mimetype == "" {
+		stream.Mimetype = utils.GetMimeType(reqPath)
 	}
 	err = fs.PutDirectly(ctx, path.Dir(reqPath), stream)
 

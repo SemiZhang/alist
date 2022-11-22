@@ -42,6 +42,7 @@ var onedriveHostMap = map[string]Host{
 
 func (d *Onedrive) GetMetaUrl(auth bool, path string) string {
 	host, _ := onedriveHostMap[d.Region]
+	path = utils.EncodePath(path, true)
 	if auth {
 		return host.Oauth
 	}
@@ -166,7 +167,7 @@ func (d *Onedrive) upBig(ctx context.Context, dstDir model.Obj, stream model.Fil
 	}
 	uploadUrl := jsoniter.Get(res, "uploadUrl").ToString()
 	var finish int64 = 0
-	const DEFAULT = 4 * 1024 * 1024
+	DEFAULT := d.ChunkSize * 1024 * 1024
 	for finish < stream.GetSize() {
 		if utils.IsCanceled(ctx) {
 			return ctx.Err()

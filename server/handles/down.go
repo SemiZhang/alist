@@ -36,6 +36,8 @@ func Down(c *gin.Context) {
 			common.ErrorResp(c, err, 500)
 			return
 		}
+		c.Header("Referrer-Policy", "no-referrer")
+		c.Header("Cache-Control", "max-age=0, no-cache, no-store, must-revalidate")
 		c.Redirect(302, link.URL)
 	}
 }
@@ -56,7 +58,7 @@ func Proxy(c *gin.Context) {
 				URL := fmt.Sprintf("%s%s?sign=%s",
 					strings.Split(downProxyUrl, "\n")[0],
 					utils.EncodePath(rawPath, true),
-					sign.Sign(filename))
+					sign.Sign(rawPath))
 				c.Redirect(302, URL)
 				return
 			}

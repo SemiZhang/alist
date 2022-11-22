@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"mime"
 	"os"
 	"path"
 	"path/filepath"
@@ -87,7 +88,7 @@ func CreateNestedFile(path string) (*os.File, error) {
 	if !Exists(basePath) {
 		err := os.MkdirAll(basePath, 0700)
 		if err != nil {
-			log.Errorf("can't create foler，%s", err)
+			log.Errorf("can't create folder, %s", err)
 			return nil, err
 		}
 	}
@@ -135,4 +136,13 @@ func GetFileType(filename string) int {
 		return conf.TEXT
 	}
 	return conf.UNKNOWN
+}
+
+func GetMimeType(name string) string {
+	ext := path.Ext(name)
+	m := mime.TypeByExtension(ext)
+	if m != "" {
+		return m
+	}
+	return "application/octet-stream"
 }

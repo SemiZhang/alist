@@ -2,7 +2,6 @@ package aria2
 
 import (
 	"fmt"
-	"mime"
 	"os"
 	"path"
 	"strconv"
@@ -13,6 +12,7 @@ import (
 	"github.com/alist-org/alist/v3/internal/model"
 	"github.com/alist-org/alist/v3/internal/op"
 	"github.com/alist-org/alist/v3/pkg/task"
+	"github.com/alist-org/alist/v3/pkg/utils"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 )
@@ -70,6 +70,8 @@ func (m *Monitor) Update() (bool, error) {
 	info, err := client.TellStatus(m.tsk.ID)
 	if err != nil {
 		m.retried++
+		log.Errorf("failed to get status of %s, retried %d times", m.tsk.ID, m.retried)
+		return false, nil
 	}
 	if m.retried > 5 {
 		return true, errors.Errorf("failed to get status of %s, retried %d times", m.tsk.ID, m.retried)
@@ -103,7 +105,14 @@ func (m *Monitor) Update() (bool, error) {
 		return true, errors.WithMessage(err, "failed to transfer file")
 	case "error":
 		return true, errors.Errorf("failed to download %s, error: %s", m.tsk.ID, info.ErrorMessage)
-	case "active", "waiting", "paused":
+	case "active":
+		m.tsk.SetStatus("aria2: " + info.Status)
+		if info.Seeder == "true" {
+			err := m.Complete()
+			return true, errors.WithMessage(err, "failed to transfer file")
+		}
+		return false, nil
+	case "waiting", "paused":
 		m.tsk.SetStatus("aria2: " + info.Status)
 		return false, nil
 	case "removed":
@@ -147,10 +156,7 @@ func (m *Monitor) Complete() error {
 			Func: func(tsk *task.Task[uint64]) error {
 				defer wg.Done()
 				size, _ := strconv.ParseInt(file.Length, 10, 64)
-				mimetype := mime.TypeByExtension(path.Ext(file.Path))
-				if mimetype == "" {
-					mimetype = "application/octet-stream"
-				}
+				mimetype := utils.GetMimeType(file.Path)
 				f, err := os.Open(file.Path)
 				if err != nil {
 					return errors.Wrapf(err, "failed to open file %s", file.Path)
